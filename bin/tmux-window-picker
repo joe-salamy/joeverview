@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 # Arrow-navigated 2x2 snapshot grid for tmux windows across sessions. Bound to `prefix o`.
-# Snapshots are static (r refreshes, reopen also works). Arrows/WASD move, Up from the
-# top row focuses the session switcher (Left/Right pages sessions, Down back),
-# 0-9 jumps to the window with that index in this session, Enter jumps to the
-# cell (or attaches to the focused session), q/Esc cancels, c opens a new window
-# in the viewed session, X/Del kills the selected window. Each cell shows its
-# title line with a ⧉ N badge when the window holds N tmux panes, then the
-# BOTTOM-LEFT of the active pane capture (last non-blank lines, truncated to
-# cell width at full resolution — cut off, never scaled). Down from the bottom
-# row scrolls.
+# Full keys: docs/USAGE.md in the repo.
+# Each cell shows the BOTTOM-LEFT of the active pane capture, truncated to cell width at full resolution.
 set -u
 # JOEVERVIEW_PROFILE=1 prints load-phase timings (ns epoch) to stderr.
 prof() { [[ -n ${JOEVERVIEW_PROFILE:-} ]] && printf '[prof %s] %s\n' "$(date +%s%N)" "$*" >&2 || :; }
-COLS=2; VROWS=2
+COLS=2; VROWS=2  # Fixed 2x2: mid_y/bot_y and the single mid divider assume VROWS=2.
 
 command -v python3 >/dev/null 2>&1 || { echo "tmux-window-grid needs python3" >&2; exit 1; }
 
@@ -74,7 +67,7 @@ trunc() { python3 -c "$PY" "$@"; }
 
 # Popup canvas is the fullscreen popup's own tty, not the invoker pane:
 # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
-if read -r H W < <(stty size 2>/dev/null) && [[ -n ${H:-} && -n ${W:-} ]]; then :; else read -r H W < <(tmux display-message -p '#{client_height} #{client_width}'); fi
+read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
 read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
 cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
 title_w=$((cell_w - 2))
@@ -83,10 +76,12 @@ snap_h=$((band_h - 1))
 vx=$((2 + cell_w + 1))
 bot_y=$((H - 2))
 mid_y=$((band_h + 3))
+(( H < 14 )) && H=14; (( W < 47 )) && W=47
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
-declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES SESS_MED
+declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES SESS_MED SESS_MEDW
+declare -A SNAP
 # Rebuild session/window metadata from tmux. Snapshot files ($TMP/$idx) and
 # SNAP_* vars are keyed by global index, so positions shift on create/kill:
 # both are dropped here and faulted back in by ensure_visible(). Also drops
@@ -95,9 +90,9 @@ load_data() {
   local sid sname wid widx wname wtitle wpath panes alert suffix c old_n
   old_n=${n:-0}
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
-  IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=(); SESS_MED=()
+  IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=(); SESS_MED=(); SESS_MEDW=()
   rm -f "$TMP"/* 2>/dev/null || true
-  for ((c = 0; c < old_n + 4; c++)); do unset "SNAP_$c" 2>/dev/null || true; done
+  SNAP=()
   nsess=0; i=0
   while IFS=$'\t' read -r sid sname; do
     SESS_IDS[$nsess]=$sid
@@ -121,6 +116,7 @@ load_data() {
   [ "$n" -eq 0 ] && return 1
   # Titles truncate in one python pass; snapshots fault in per visible page.
   mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
+  unset RAW_TITLES
   prof "meta n=$n nsess=$nsess"
 }
 # Clamp top so sel sits on the visible page.
@@ -128,17 +124,15 @@ place_top() {
   local rstart cnt max_top
   rstart=$(( sel - (sel - s0) % COLS ))
   cnt=$((send - s0))
-  if (( cnt >= 3 )); then
-    max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
-    if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
-  else
-    top=$rstart
-  fi
+  max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
+  (( max_top < s0 )) && max_top=$s0
+  if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
 }
 # Re-read metadata and reseat sess/sel/top by stable ID (want_wid="" falls
 # back to want_off, then clamps into the session). keep_bar preserves
 # session-bar focus for r. Full draw; exits quietly when nothing remains
 # (e.g. last window killed).
+# Args: $1=want_sid $2=want_wid ("" = skip) $3=keep_bar $4=want_off (kill path only).
 refresh_to() {
   local want_sid=${1:-} want_wid=${2:-} keep_bar=${3:-0} want_off=${4:-} k found=0
   load_data || exit 0
@@ -204,10 +198,9 @@ place_top
 # $TMP/$idx file is the loaded flag. draw() ensures its page, so scrolls
 # and session switches fault missing cells in synchronously.
 load_cell() {
-  [[ -f $TMP/$1 ]] && return 0
+  [[ -f "$TMP/$1" ]] && return 0
   tmux capture-pane -pe -t "${IDS[$1]}" 2>/dev/null | trunc "$cell_w" "$snap_h" > "$TMP/$1"
-  # shellcheck disable=SC2178
-  mapfile -t "SNAP_$1" < "$TMP/$1"
+  SNAP[$1]=$(<"$TMP/$1")
 }
 ensure_visible() {
   local e=$((top + COLS * VROWS)) k
@@ -243,7 +236,7 @@ paint_row() {
   local r=$1 roff base idx c coff
   if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
   base=$((top + r * COLS))
-  # Subtractive frame: skip border ticks with no occupied owner; never new glyphs.
+  # Arm-aware frame (junctions close with corners): skip border ticks with no occupied owner; never invent arms.
   at "$roff" 0
   (( base < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
   for ((c = 0; c < COLS; c++)); do
@@ -258,6 +251,7 @@ paint_row() {
   (( base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
   return 0
 }
+vw_of() { python3 -c 'import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.stdin.read()); print(sum(2 if unicodedata.east_asian_width(c) in ("W","F") else (0 if unicodedata.combining(c) else 1) for c in t))'; }
 # Session medallion for the top border: padded arrows when paging is
 # possible, padded bare name when it is not (single session hides the bar
 # entirely — no focus, no hint). Truncated to fit between the
@@ -290,7 +284,28 @@ switch_sess() {
   sel=$s0; top=$s0; bar=1
   draw
 }
+# Horizontal border row for one occupancy pair: ends + center junction
+# follow the left/right occupancy ($4/$5); the mid divider is separate.
+hborder() {
+  local row=$1 le=$2 re=$3 ol=$4 or=$5 jb=$6 jl=$7 jr=$8 seg x
+  if (( ol )); then seg=$le; else seg=' '; fi
+  for ((x = 1; x <= W - 2; x++)); do
+    if ((x == vx)); then
+      if (( ol && or )); then seg+=$jb
+      elif (( ol )); then seg+=$jl
+      elif (( or )); then seg+=$jr
+      else seg+=' '; fi
+    elif ((x < vx)); then
+      if (( ol )); then seg+='─'; else seg+=' '; fi
+    else
+      if (( or )); then seg+='─'; else seg+=' '; fi
+    fi
+  done
+  if (( or )); then seg+=$re; else seg+=' '; fi
+  put "$row" 0 "$seg"
+}
 draw() {
+  local b0 b1 b2 b3 seg x y r c idx coff roff l sbar sbx sblen lines
   ensure_visible
   if [[ -z ${DREW:-} ]]; then DREW=1; prof "ready n=$n"; fi
   FRAME=$'\x1b[?25l'
@@ -302,24 +317,10 @@ draw() {
   (( top + 1 < send )) && b1=1 || b1=0
   (( top + 2 < send )) && b2=1 || b2=0
   (( top + 3 < send )) && b3=1 || b3=0
-  if (( b0 )); then seg='╭'; else seg=' '; fi
-  for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then
-      if (( b0 && b1 )); then seg+='┬'
-      elif (( b0 )); then seg+='╮'
-      elif (( b1 )); then seg+='╭'
-      else seg+=' '; fi
-    elif ((x < vx)); then
-      if (( b0 )); then seg+='─'; else seg+=' '; fi
-    else
-      if (( b1 )); then seg+='─'; else seg+=' '; fi
-    fi
-  done
-  if (( b1 )); then seg+='╮'; else seg+=' '; fi
-  put 0 0 "$seg"
+  hborder 0 '╭' '╮' "$b0" "$b1" '┬' '╮' '╭'
   nput 0 2 ' Windows '
-  [[ -n ${SESS_MED[$sess]+_} ]] || SESS_MED[$sess]=$(sess_label)
-  sbar=${SESS_MED[$sess]}; sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12; sblen=${#sbar}
+  [[ -n ${SESS_MED[$sess]+_} ]] || { SESS_MED[$sess]=$(sess_label); SESS_MEDW[$sess]=$(printf '%s' "${SESS_MED[$sess]}" | vw_of); }
+  sbar=${SESS_MED[$sess]}; sblen=${SESS_MEDW[$sess]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
   if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
   nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
@@ -332,21 +333,7 @@ draw() {
       if (( top + 3 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
     fi
   done
-  if (( b2 )); then seg='╰'; else seg=' '; fi
-  for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then
-      if (( b2 && b3 )); then seg+='┴'
-      elif (( b2 )); then seg+='╯'
-      elif (( b3 )); then seg+='╰'
-      else seg+=' '; fi
-    elif ((x < vx)); then
-      if (( b2 )); then seg+='─'; else seg+=' '; fi
-    else
-      if (( b3 )); then seg+='─'; else seg+=' '; fi
-    fi
-  done
-  if (( b3 )); then seg+='╯'; else seg+=' '; fi
-  put "$bot_y" 0 "$seg"
+  hborder "$bot_y" '╰' '╯' "$b2" "$b3" '┴' '╯' '╰'
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
@@ -397,9 +384,9 @@ draw() {
       if ((idx < send)); then
         if ((idx == sel && bar == 0)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
         else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
-        declare -n ref="SNAP_$idx"
+        mapfile -t lines <<<"${SNAP[$idx]}"
         for ((l = 0; l < snap_h; l++)); do
-          put $((roff + 1 + l)) "$coff" "${ref[$l]:-}"
+          put $((roff + 1 + l)) "$coff" "${lines[$l]:-}"
         done
       else
         for ((l = 0; l < band_h; l++)); do
@@ -449,14 +436,17 @@ jump_win() {
   exit 0
 }
 
+main() {
+local prev k b d j
 draw
 while IFS= read -rsn1 k; do
-  prev=$sel; prev_sess=$sess; prev_bar=$bar
+  prev=$sel
   if [[ $k == $'\x1b' ]]; then
-    IFS= read -rsn1 -t 0.1 b || break
+    IFS= read -rsn1 -t 0.25 b || break
     [[ $b == '[' ]] || continue
-    IFS= read -rsn1 -t 0.1 d || continue
+    IFS= read -rsn1 -t 0.25 d || continue
     case $d in
+      [0-9]) while [[ $d != [A-Za-z~] ]]; do IFS= read -rsn1 -t 0.05 d || break; done; continue ;;
       A) if ((bar)); then continue
          elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
          elif ((nsess > 1)); then bar=1; draw; continue; fi ;;
@@ -474,6 +464,7 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [qQ] ]]; then
     break
   elif [[ $k == [0-9] ]]; then
+    (( bar )) && continue
     for ((j = s0; j < send; j++)); do
       if [[ ${WIDX[$j]} == "$k" ]]; then
         jump_win "$j"
@@ -493,6 +484,7 @@ while IFS= read -rsn1 k; do
     if ((bar)); then switch_sess 1; continue
     else ((sel + 1 < send)) && sel=$((sel + 1)); fi
   elif [[ $k == [cC] ]]; then
+    (( bar )) && continue
     do_new_window; continue
   elif [[ $k == X || $k == $'\x7f' ]]; then
     # Capital-only kill (plus Del alias): lowercase x stays ignored as a
@@ -505,8 +497,8 @@ while IFS= read -rsn1 k; do
   else
     continue
   fi
-  if ((prev == sel && prev_sess == sess && prev_bar == bar)); then continue; fi
-  if ((bar == 0 && prev_bar == 0 && sel >= top && sel <= top + COLS * VROWS - 1 && prev >= top && prev <= top + COLS * VROWS - 1)); then
+  if ((prev == sel)); then continue; fi
+  if ((sel >= top && sel <= top + COLS * VROWS - 1 && prev >= top && prev <= top + COLS * VROWS - 1)); then
     # Repaint whole title rows: per-cell EL wipes the sibling, so clear
     # once per row and rewrite both cells + gutter + borders.
     if (((prev - top) / COLS == (sel - top) / COLS)); then
@@ -515,6 +507,7 @@ while IFS= read -rsn1 k; do
       paint_row $(((prev - top) / COLS))
       paint_row $(((sel - top) / COLS))
     fi
+    # Direct write (not put): FRAME is only flushed in draw().
     at $((H - 1)) 0; footext
   else
     while ((sel < top)); do top=$((top - COLS)); done
@@ -523,3 +516,5 @@ while IFS= read -rsn1 k; do
   fi
 done
 exit 0
+}
+main "$@"

@@ -23,9 +23,9 @@ The repo checkout is the source of truth: `~/.local/bin/tmux-*` are symlinks int
 
 | binding | what |
 |---|---|
-| `prefix o` | window grid: arrows/WASD move, `Enter` jump, `q`/`Esc` cancel, down from bottom row scrolls |
-| `prefix O` | pane jumper (fzf + preview): `Enter` jump, `Ctrl-X` kill pane |
-| `prefix /` | scrollback search across all panes: `Enter` jump to match |
+| `prefix o` | window grid — see `docs/USAGE.md` |
+| `prefix O` | pane jumper — see `docs/USAGE.md` |
+| `prefix /` | scrollback search — see `docs/USAGE.md` |
 
 Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DESIGN.md`](docs/DESIGN.md).
 

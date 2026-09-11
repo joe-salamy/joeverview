@@ -12,7 +12,7 @@ Why: bare `-t 0`/`-t 1` resolve against the *active* window/session, not window 
 
 `prefix o` reads window metadata at launch (`list-sessions` + per-session `list-windows`), truncates all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in synchronously. `r` (or reopen) refreshes after out-of-band changes — there is no way to mirror live panes without moving them.
 
-Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding is trimmed inside the trunc helper (no `sed` stage).
+Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding is trimmed inside the trunc helper (no `sed` stage) — grid only; the fzf pickers still strip with sed.
 
 ## Visible-width-aware truncation (never `cut -c`)
 
@@ -28,7 +28,7 @@ The fzf pickers (`O`, `/`) use `--ansi --preview-window=…:nowrap` instead — 
 
 Each full paint is buffered into one string and flushed with a single `printf` (~9.5 KB atomic). Same-page moves repaint only the affected title row(s): one `EL` clear per row, then both cells + gutter + borders rewritten with no-EL moves (per-cell `EL` wiped the sibling title). No-op keys redraw nothing. Cursor hidden (`?25l`) while open, `stty` state restored on exit.
 
-Quoting trap that bit: `'\x1b[K'` in single quotes emits literal text — escapes are built with `printf -v '…\x1b…'`. The smoke test asserts zero literal `\x1b` sequences for this reason.
+Quoting trap that bit: `'\x1b[K'` in single quotes emits literal text — escapes are built with `printf -v '…\x1b…'`. tests/grid-render.sh asserts zero literal `\x1b` sequences over rendered output for this reason.
 
 ## Alert colors
 

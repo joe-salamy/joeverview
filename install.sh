@@ -2,6 +2,7 @@
 # joeverview installer — symlinks bin/* into ~/.local/bin and wires
 # `source-file .../tmux/joeverview.conf` into ~/.tmux.conf. Idempotent.
 set -euo pipefail
+[[ "$(uname)" == Linux ]] || { echo "joeverview install.sh supports Linux only (GNU sed)" >&2; exit 1; }
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
@@ -37,7 +38,15 @@ if [ -f "$TMUX_CONF" ]; then
     fi
     echo "wired source-file into $TMUX_CONF"
   else
-    echo "source-file already wired, skipping edit"
+      if grep -qF "source-file \"$SNIPPET\"" "$TMUX_CONF"; then
+        echo "source-file already wired, skipping edit"
+      else
+        cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
+        grep -vF "joeverview.conf" "$TMUX_CONF" > "$TMUX_CONF.tmp" || true
+        mv "$TMUX_CONF.tmp" "$TMUX_CONF"
+        printf 'source-file "%s"\n' "$SNIPPET" >> "$TMUX_CONF"
+        echo "rewired stale source-file to $SNIPPET"
+      fi
   fi
 else
   printf 'source-file "%s"\n' "$SNIPPET" > "$TMUX_CONF"

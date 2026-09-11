@@ -5,9 +5,10 @@
 # Row field 1 is #{pane_id} (hidden via --with-nth): bare `W.P` targets can
 # collide with session names, so every -t uses the stable %id.
 set -u
+# LIST is the fzf reload source only; the initial pipe below is literal (no eval).
 LIST="tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{window_name} │ #{pane_title} │ #{pane_current_path}'"
-PREVIEW="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//' || tmux capture-pane -p -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//'"
-TARGET=$(eval "$LIST" | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
+PREVIEW="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*$//'"
+TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{window_name} │ #{pane_title} │ #{pane_current_path}' | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
   --prompt='pane> ' \
   --header='enter=jump  ctrl-x=kill-pane' \
   --preview="$PREVIEW" \
@@ -15,5 +16,4 @@ TARGET=$(eval "$LIST" | fzf --ansi --with-nth=2.. --reverse --border --height=10
   --bind="ctrl-x:execute-silent(tmux kill-pane -t {1})+reload($LIST)") || exit 0
 [ -z "${TARGET:-}" ] && exit 0
 TARGET_ID=$(printf '%s' "$TARGET" | cut -d' ' -f1)
-[ -z "$TARGET_ID" ] && exit 0
 tmux select-pane -t "$TARGET_ID"

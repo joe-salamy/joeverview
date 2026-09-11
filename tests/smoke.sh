@@ -8,7 +8,7 @@ fail=0
 
 for s in tmux-window-picker tmux-pane-picker tmux-content-search; do
   if bash -n "$REPO/bin/$s"; then echo "OK   bash -n $s"; else echo "FAIL bash -n $s"; fail=1; fi
-  if [ "$(readlink "$HOME/.local/bin/$s")" = "$REPO/bin/$s" ]; then
+  link=$(readlink "$HOME/.local/bin/$s" 2>/dev/null || true); if [ "$link" = "$REPO/bin/$s" ]; then
     echo "OK   symlink $s"
   else
     echo "FAIL symlink $s"; fail=1

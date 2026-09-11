@@ -7,9 +7,9 @@
 set -u
 LINES=500
 PANES=$(tmux list-panes -s -F '#{pane_id}')
-MATCH=$(for p in $PANES; do
+MATCH=$(while IFS= read -r p; do
   tmux capture-pane -p -S -$LINES -t "$p" 2>/dev/null | grep -v '^[[:space:]]*$' | sed "s|^|$p:|"
-done | fzf --ansi --reverse --border --height=100% \
+done <<<"$PANES" | fzf --ansi --reverse --border --height=100% \
   --delimiter=: \
   --prompt='grep> ' \
   --header="enter=jump-to-pane  (fuzzy over last $LINES lines per pane)" \
@@ -17,5 +17,4 @@ done | fzf --ansi --reverse --border --height=100% \
   --preview-window='right:60%:nowrap') || exit 0
 [ -z "${MATCH:-}" ] && exit 0
 TARGET_ID=$(printf '%s' "$MATCH" | cut -d: -f1)
-[ -z "$TARGET_ID" ] && exit 0
 tmux select-pane -t "$TARGET_ID"
