@@ -160,11 +160,19 @@ refresh_to() {
   place_top
   draw
 }
-# New window in the viewed session; cursor lands on it.
+# New window in the viewed session, starting in the selected cell's
+# directory; cursor lands on it. Falls back to tmux default-path when the
+# path is empty/unreadable (e.g. deleted dir).
 do_new_window() {
-  local target newid
+  local target newid dir
   target=${SESS_IDS[$sess]}
-  newid=$(tmux new-window -t "$target" -F "#{window_id}" 2>/dev/null) || return 0
+  dir=$(tmux display-message -p -t "${IDS[$sel]}" '#{pane_current_path}' 2>/dev/null) || dir=""
+  if [[ -n $dir ]]; then
+    newid=$(tmux new-window -P -F "#{window_id}" -t "$target" -c "$dir" 2>/dev/null) || \
+      newid=$(tmux new-window -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
+  else
+    newid=$(tmux new-window -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
+  fi
   refresh_to "$target" "$newid" 0
 }
 # Kill the selected window (grid focus only); clamps into the session.
