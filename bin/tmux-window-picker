@@ -135,17 +135,20 @@ place_top() {
     top=$rstart
   fi
 }
-# Re-read metadata and reseat sess/sel/top by stable ID (want_wid="" clamps
-# into the session). keep_bar preserves session-bar focus for r. Full draw;
-# exits quietly when nothing remains (e.g. last window killed).
+# Re-read metadata and reseat sess/sel/top by stable ID (want_wid="" falls
+# back to want_off, then clamps into the session). keep_bar preserves
+# session-bar focus for r. Full draw; exits quietly when nothing remains
+# (e.g. last window killed).
 refresh_to() {
-  local want_sid=${1:-} want_wid=${2:-} keep_bar=${3:-0} k
+  local want_sid=${1:-} want_wid=${2:-} keep_bar=${3:-0} want_off=${4:-} k found=0
   load_data || exit 0
   sess=0
   if [[ -n $want_sid ]]; then
     for ((k = 0; k < nsess; k++)); do
-      if [[ ${SESS_IDS[$k]} == "$want_sid" ]]; then sess=$k; break; fi
+      if [[ ${SESS_IDS[$k]} == "$want_sid" ]]; then sess=$k; found=1; break; fi
     done
+  else
+    found=1
   fi
   s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
   sel=$s0
@@ -153,6 +156,8 @@ refresh_to() {
     for ((k = s0; k < send; k++)); do
       if [[ ${IDS[$k]} == "$want_wid" ]]; then sel=$k; break; fi
     done
+  elif [[ -n $want_off ]] && (( found )); then
+    sel=$((s0 + want_off))
   fi
   (( sel < s0 )) && sel=$s0
   (( sel >= send )) && sel=$((send - 1))
@@ -175,11 +180,13 @@ do_new_window() {
   fi
   refresh_to "$target" "$newid" 0
 }
-# Kill the selected window (grid focus only); clamps into the session.
+# Kill the selected window (grid focus only); stays at the same offset so
+# the next window slides under the cursor (clamped at the end).
 do_kill_window() {
   (( bar )) && return 0
+  local target=${SESS_IDS[$sess]} off=$((sel - s0))
   tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
-  refresh_to "${SESS_IDS[$sess]}" "" 0
+  refresh_to "$target" "" 0 "$off"
 }
 load_data || { rm -rf "$TMP"; exit 0; }
 # Start on the current window, not always cell 0.
