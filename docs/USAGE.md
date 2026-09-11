@@ -4,13 +4,14 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 ## `prefix o` — window grid
 
-2×2 snapshot grid. Each cell: `[index] name │ task │ path` title + bottom-left of the window's visible pane.
+2×2 snapshot grid, one session at a time. Each cell: `[index] name │ task │ path` title (+ `⧉N` when the window holds N tmux panes) + bottom-left of the window's active pane.
 
 | key | action |
 |---|---|
-| arrows / WASD | move |
-| `0`-`9` | jump to window with that index (no match = ignore) |
-| `Enter` | jump to window |
+| arrows / WASD | move (Up from the top row focuses the session bar) |
+| `←`/`→` on the session bar | switch session |
+| `0`-`9` | jump to window with that index in this session (no match = ignore) |
+| `Enter` | jump to window (on the session bar: attach to session) |
 | `q` / `Esc` | cancel |
 | down from bottom row | scroll |
 

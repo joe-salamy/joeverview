@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Arrow-navigated 2x2 snapshot grid for tmux windows. Bound to `prefix o`.
-# Static captures at launch (reopen to refresh). Arrows/WASD move, 0-9 jumps
-# to the window with that index, Enter jumps to selection, q/Esc cancels. Each cell shows its title line, then the
-# BOTTOM-LEFT of the capture (last non-blank lines, truncated to cell width
-# at full resolution — cut off, never scaled). Down from the bottom row scrolls.
+# Arrow-navigated 2x2 snapshot grid for tmux windows across sessions. Bound to `prefix o`.
+# Static captures at launch (reopen to refresh). Arrows/WASD move, Up from the
+# top row focuses the session switcher (Left/Right pages sessions, Down back),
+# 0-9 jumps to the window with that index in this session, Enter jumps to the
+# cell (or attaches to the focused session), q/Esc cancels. Each cell shows its
+# title line with a ⧉N badge when the window holds N tmux panes, then the
+# BOTTOM-LEFT of the active pane capture (last non-blank lines, truncated to
+# cell width at full resolution — cut off, never scaled). Down from the bottom
+# row scrolls.
 set -u
 COLS=2; VROWS=2
 
@@ -71,34 +75,54 @@ bot_y=$((H - 2))
 mid_y=$((band_h + 3))
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
-declare -a IDS TITLES ALERTS WIDX
-i=0
-while IFS=$'\t' read -r wid widx wname wtitle wpath alert; do
-  IDS[$i]=$wid
-  WIDX[$i]=$widx
-  ALERTS[$i]=$alert
-  TITLES[$i]=$(printf '[%s] %s │ %s │ %s' "$widx" "$wname" "$wtitle" "$wpath" | trunc "$title_w")
-  tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
-  # shellcheck disable=SC2178
-  mapfile -t "SNAP_$i" < "$TMP/$i"
-  i=$((i + 1))
-done < <(tmux list-windows -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
+declare -a IDS TITLES ALERTS WIDX WIN_SESS
+nsess=0; i=0
+cur_sid=$(tmux display-message -p '#{session_id}')
+while IFS=$'\t' read -r sid sname; do
+  SESS_IDS[$nsess]=$sid
+  SESS_NAMES[$nsess]=$sname
+  SESS_START[$nsess]=$i
+  c=0
+  while IFS=$'\t' read -r wid widx wname wtitle wpath panes alert; do
+    IDS[$i]=$wid
+    WIDX[$i]=$widx
+    ALERTS[$i]=$alert
+    WIN_SESS[$i]=$sid
+    suffix=""
+    if ((panes > 1)); then suffix=" ⧉$panes"; fi
+    TITLES[$i]=$(printf '[%s] %s │ %s │ %s%s' "$widx" "$wname" "$wtitle" "$wpath" "$suffix" | trunc "$title_w")
+    tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
+    # shellcheck disable=SC2178
+    mapfile -t "SNAP_$i" < "$TMP/$i"
+    i=$((i + 1)); c=$((c + 1))
+  done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+  SESS_COUNT[$nsess]=$c
+  nsess=$((nsess + 1))
+done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
 n=$i
 [ "$n" -eq 0 ] && { rm -rf "$TMP"; exit 0; }
 
 # Start on the current window, not always cell 0.
 sel=0
+sess=0
 cur=$(tmux display-message -p '#{window_id}')
 for ((k = 0; k < n; k++)); do
   if [[ ${IDS[$k]} == "$cur" ]]; then sel=$k; break; fi
 done
-row=$((sel - sel % COLS))
-if (( n >= 3 )); then
-  max_top=$(( (n - 3) / COLS * COLS ))
-  if (( row < max_top )); then top=$row; else top=$max_top; fi
+for ((k = 0; k < nsess; k++)); do
+  if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
+done
+s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
+rstart=$(( sel - (sel - s0) % COLS ))
+cnt=$((send - s0))
+if (( cnt >= 3 )); then
+  max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
+  if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
 else
-  top=$row
+  top=$rstart
 fi
+bar=0
 
 saved_stty=$(stty -g 2>/dev/null || true)
 cleanup() { printf '\x1b[?25h'; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; rm -rf "$TMP"; }
@@ -130,87 +154,113 @@ paint_row() {
   base=$((top + r * COLS))
   # Subtractive frame: skip border ticks with no occupied owner; never new glyphs.
   at "$roff" 0
-  (( base < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
+  (( base < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
   for ((c = 0; c < COLS; c++)); do
     idx=$((base + c))
     if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
-    if ((idx < n)); then
+    if ((idx < send)); then
       if ((idx == sel)); then printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 1)"
       else printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 0)"; fi
     fi
   done
-  (( base < n || base + 1 < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
-  (( base + 1 < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
+  (( base < send || base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
+  (( base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
   return 0
 }
-footext() { hi=$((top + 1)); lo=$((top + COLS * VROWS)); ((lo > n)) && lo=$n; printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$n"; }
+# Session switcher for the top border: truncated to fit between the
+# ' Windows ' stamp and the corners. Focus folds reverse like cell titles.
+sess_label() {
+  local maxw=$((W - 24)) nm
+  ((maxw < 8)) && maxw=8
+  nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+  printf '← %s →' "$nm"
+}
+footext() {
+  local rel=$((top - s0)) cnt=$((send - s0)) hi lo
+  hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
+  if ((bar)); then printf '←/→ switch session · ↓ back · Enter attach · q cancel · session %d/%d' "$((sess + 1))" "$nsess"
+  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+}
+# Page to the session `ns` steps away: reset to its first page, keep bar
+# focus so the user can keep paging. Full draw — the only bar painter.
+switch_sess() {
+  (( nsess > 1 )) || return 0
+  sess=$(( (sess + $1 + nsess) % nsess ))
+  s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
+  sel=$s0; top=$s0; bar=1
+  draw
+}
 draw() {
   FRAME=$'\x1b[?25l'
   # Subtractive frame: same geometry/sizes, only skip segments whose both
   # sides are empty (erased = blank, never a new glyph). Row0-left always
-  # exists while drawing, so top-left is never erased.
-  if (( top < n )); then seg='╭'; else seg=' '; fi
+  # exists while drawing, so top-left is never erased. Bounds are the visible
+  # session's [top, send), never the global window list.
+  if (( top < send )); then seg='╭'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top < n || top + 1 < n )); then seg+='┬'; else seg+=' '; fi
+      if (( top < send || top + 1 < send )); then seg+='┬'; else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top < n )); then seg+='─'; else seg+=' '; fi
+      if (( top < send )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 1 < n )); then seg+='─'; else seg+=' '; fi
+      if (( top + 1 < send )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 1 < n )); then seg+='╮'; else seg+=' '; fi
+  if (( top + 1 < send )); then seg+='╮'; else seg+=' '; fi
   put 0 0 "$seg"
   nput 0 2 ' Windows '
+  sbar=$(sess_label); sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12
+  if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
+  nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      (( top < n )) && nput "$y" 0 '│'
-      (( top + 1 < n )) && nput "$y" $((W - 1)) '│'
+      (( top < send )) && nput "$y" 0 '│'
+      (( top + 1 < send )) && nput "$y" $((W - 1)) '│'
     else
-      (( top + 2 < n )) && nput "$y" 0 '│'
-      (( top + 3 < n )) && nput "$y" $((W - 1)) '│'
+      (( top + 2 < send )) && nput "$y" 0 '│'
+      (( top + 3 < send )) && nput "$y" $((W - 1)) '│'
     fi
   done
-  if (( top + 2 < n )); then seg='╰'; else seg=' '; fi
+  if (( top + 2 < send )); then seg='╰'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top + 2 < n || top + 3 < n )); then seg+='┴'; else seg+=' '; fi
+      if (( top + 2 < send || top + 3 < send )); then seg+='┴'; else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top + 2 < n )); then seg+='─'; else seg+=' '; fi
+      if (( top + 2 < send )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 3 < n )); then seg+='─'; else seg+=' '; fi
+      if (( top + 3 < send )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 3 < n )); then seg+='╯'; else seg+=' '; fi
+  if (( top + 3 < send )); then seg+='╯'; else seg+=' '; fi
   put "$bot_y" 0 "$seg"
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      (( top < n || top + 1 < n )) && nput "$y" "$vx" '│'
+      (( top < send || top + 1 < send )) && nput "$y" "$vx" '│'
     else
-      (( top + 2 < n || top + 3 < n )) && nput "$y" "$vx" '│'
+      (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
     fi
   done
-  if (( top < n || top + 2 < n )); then seg='├'; else seg=' '; fi
+  if (( top < send || top + 2 < send )); then seg='├'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top < n || top + 1 < n || top + 2 < n || top + 3 < n )); then seg+='┼'; else seg+=' '; fi
+      if (( top < send || top + 1 < send || top + 2 < send || top + 3 < send )); then seg+='┼'; else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top < n || top + 2 < n )); then seg+='─'; else seg+=' '; fi
+      if (( top < send || top + 2 < send )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 1 < n || top + 3 < n )); then seg+='─'; else seg+=' '; fi
+      if (( top + 1 < send || top + 3 < send )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 1 < n || top + 3 < n )); then seg+='┤'; else seg+=' '; fi
+  if (( top + 1 < send || top + 3 < send )); then seg+='┤'; else seg+=' '; fi
   put "$mid_y" 0 "$seg"
   for ((r = 0; r < VROWS; r++)); do
     if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
     for ((c = 0; c < COLS; c++)); do
       idx=$((top + r * COLS + c))
       if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
-      if ((idx < n)); then
-        if ((idx == sel)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
+      if ((idx < send)); then
+        if ((idx == sel && bar == 0)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
         else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
         declare -n ref="SNAP_$idx"
         for ((l = 0; l < snap_h; l++)); do
@@ -230,13 +280,13 @@ draw() {
     for ((l = 0; l < band_h; l++)); do
       y=$((roff + l))
       if ((r == 0)); then
-        (( top < n )) && nput "$y" 0 '│'
-        (( top < n || top + 1 < n )) && nput "$y" "$vx" '│'
-        (( top + 1 < n )) && nput "$y" $((W - 1)) '│'
+        (( top < send )) && nput "$y" 0 '│'
+        (( top < send || top + 1 < send )) && nput "$y" "$vx" '│'
+        (( top + 1 < send )) && nput "$y" $((W - 1)) '│'
       else
-        (( top + 2 < n )) && nput "$y" 0 '│'
-        (( top + 2 < n || top + 3 < n )) && nput "$y" "$vx" '│'
-        (( top + 3 < n )) && nput "$y" $((W - 1)) '│'
+        (( top + 2 < send )) && nput "$y" 0 '│'
+        (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
+        (( top + 3 < send )) && nput "$y" $((W - 1)) '│'
       fi
     done
   done
@@ -246,51 +296,72 @@ draw() {
 
 move_down() {
   local next=$((sel + COLS))
-  if ((next < n)); then sel=$next; return; fi
-  local last_start=$(((n - 1) / COLS * COLS))
+  if ((next < send)); then sel=$next; return; fi
+  local last_start=$(( (send - 1 - s0) / COLS * COLS + s0 ))
   if ((sel < last_start)); then
-    local t=$((last_start + sel % COLS))
-    ((t >= n)) && t=$((n - 1))
+    local t=$((last_start + (sel - s0) % COLS))
+    ((t >= send)) && t=$((send - 1))
     sel=$t
   fi
 }
 
+# Jump to a window, switching session first when it lives elsewhere.
+jump_win() {
+  local j=$1 wsess
+  wsess=${WIN_SESS[$j]}
+  [[ $wsess != "$cur_sid" ]] && tmux switch-client -t "$wsess" 2>/dev/null
+  tmux select-window -t "${IDS[$j]}"
+  exit 0
+}
+
 draw
 while IFS= read -rsn1 k; do
-  prev=$sel
+  prev=$sel; prev_sess=$sess; prev_bar=$bar
   if [[ $k == $'\x1b' ]]; then
     IFS= read -rsn1 -t 0.1 b || break
     [[ $b == '[' ]] || continue
     IFS= read -rsn1 -t 0.1 d || continue
     case $d in
-      A) ((sel >= COLS)) && sel=$((sel - COLS)) ;;
-      B) move_down ;;
-      C) ((sel + 1 < n)) && sel=$((sel + 1)) ;;
-      D) ((sel > 0)) && sel=$((sel - 1)) ;;
+      A) if ((bar)); then continue
+         elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
+         else bar=1; draw; continue; fi ;;
+      B) if ((bar)); then bar=0; draw; continue
+         else move_down; fi ;;
+      C) if ((bar)); then switch_sess 1; continue
+         else ((sel + 1 < send)) && sel=$((sel + 1)); fi ;;
+      D) if ((bar)); then switch_sess -1; continue
+         else ((sel > s0)) && sel=$((sel - 1)); fi ;;
+      *) continue ;;
     esac
   elif [[ -z $k || $k == $'\n' ]]; then
-    tmux select-window -t "${IDS[$sel]}"
-    exit 0
+    if ((bar)); then tmux switch-client -t "${SESS_IDS[$sess]}"; exit 0; fi
+    jump_win "$sel"
   elif [[ $k == [qQ] ]]; then
     break
   elif [[ $k == [0-9] ]]; then
-    for ((j = 0; j < n; j++)); do
+    for ((j = s0; j < send; j++)); do
       if [[ ${WIDX[$j]} == "$k" ]]; then
-        tmux select-window -t "${IDS[$j]}"
-        exit 0
+        jump_win "$j"
       fi
     done
   elif [[ $k == [wW] ]]; then
-    ((sel >= COLS)) && sel=$((sel - COLS))
+    if ((bar)); then continue
+    elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
+    else bar=1; draw; continue; fi
   elif [[ $k == [sS] ]]; then
-    move_down
+    if ((bar)); then bar=0; draw; continue
+    else move_down; fi
   elif [[ $k == [aA] ]]; then
-    ((sel > 0)) && sel=$((sel - 1))
+    if ((bar)); then switch_sess -1; continue
+    else ((sel > s0)) && sel=$((sel - 1)); fi
   elif [[ $k == [dD] ]]; then
-    ((sel + 1 < n)) && sel=$((sel + 1))
+    if ((bar)); then switch_sess 1; continue
+    else ((sel + 1 < send)) && sel=$((sel + 1)); fi
+  else
+    continue
   fi
-  if ((prev == sel)); then continue; fi
-  if ((sel >= top && sel <= top + COLS * VROWS - 1)); then
+  if ((prev == sel && prev_sess == sess && prev_bar == bar)); then continue; fi
+  if ((bar == 0 && prev_bar == 0 && sel >= top && sel <= top + COLS * VROWS - 1 && prev >= top && prev <= top + COLS * VROWS - 1)); then
     # Repaint whole title rows: per-cell EL wipes the sibling, so clear
     # once per row and rewrite both cells + gutter + borders.
     if (((prev - top) / COLS == (sel - top) / COLS)); then
