@@ -358,8 +358,8 @@ draw() {
     fi
   done
   if (( b0 && b2 )); then seg='├'
-  elif (( b0 )); then seg='└'
-  elif (( b2 )); then seg='┌'
+  elif (( b0 )); then seg='╰'
+  elif (( b2 )); then seg='╭'
   else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
@@ -371,10 +371,10 @@ draw() {
       elif (( r && u && d )); then seg+='├'
       elif (( l && r )); then seg+='─'
       elif (( u && d )); then seg+='│'
-      elif (( l && u )); then seg+='┘'
-      elif (( l && d )); then seg+='┐'
-      elif (( r && u )); then seg+='└'
-      elif (( r && d )); then seg+='┌'
+      elif (( l && u )); then seg+='╯'
+      elif (( l && d )); then seg+='╮'
+      elif (( r && u )); then seg+='╰'
+      elif (( r && d )); then seg+='╭'
       elif (( l || r )); then seg+='─'
       elif (( u || d )); then seg+='│'
       else seg+=' '; fi
@@ -385,8 +385,8 @@ draw() {
     fi
   done
   if (( b1 && b3 )); then seg+='┤'
-  elif (( b1 )); then seg+='┘'
-  elif (( b3 )); then seg+='┐'
+  elif (( b1 )); then seg+='╯'
+  elif (( b3 )); then seg+='╮'
   else seg+=' '; fi
   put "$mid_y" 0 "$seg"
   for ((r = 0; r < VROWS; r++)); do
