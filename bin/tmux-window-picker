@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Arrow-navigated 2x2 snapshot grid for tmux windows across sessions. Bound to `prefix o`.
-# Static captures at launch (reopen to refresh). Arrows/WASD move, Up from the
+# Snapshots are static (reopen to refresh). Arrows/WASD move, Up from the
 # top row focuses the session switcher (Left/Right pages sessions, Down back),
 # 0-9 jumps to the window with that index in this session, Enter jumps to the
 # cell (or attaches to the focused session), q/Esc cancels. Each cell shows its
@@ -9,6 +9,8 @@
 # cell width at full resolution — cut off, never scaled). Down from the bottom
 # row scrolls.
 set -u
+# JOEVERVIEW_PROFILE=1 prints load-phase timings (ns epoch) to stderr.
+prof() { [[ -n ${JOEVERVIEW_PROFILE:-} ]] && printf '[prof %s] %s\n' "$(date +%s%N)" "$*" >&2 || :; }
 COLS=2; VROWS=2
 
 command -v python3 >/dev/null 2>&1 || { echo "tmux-window-grid needs python3" >&2; exit 1; }
@@ -57,6 +59,10 @@ for raw in sys.stdin:
                 content = True
     if saw:
         out.append('\x1b[0m')
+    # Folded-in rstrip (was a sed stage): capture-pane pads lines with spaces
+    # that must not eat cell width; SGR tokens are multi-char, never popped.
+    while out and len(out[-1]) == 1 and out[-1] in ' \t':
+        out.pop()
     rows.append((content, ''.join(out)))
 if keep is not None:
     texts = [t for c, t in rows if c][-keep:] if keep > 0 else []
@@ -67,9 +73,8 @@ trunc() { python3 -c "$PY" "$@"; }
 
 # Popup canvas is the fullscreen popup's own tty, not the invoker pane:
 # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
-if ! read -r H W < <(stty size 2>/dev/null) || [[ -z ${H:-} || -z ${W:-} ]]; then
-  H=$(tmux display-message -p '#{client_height}'); W=$(tmux display-message -p '#{client_width}')
-fi
+if read -r H W < <(stty size 2>/dev/null) && [[ -n ${H:-} && -n ${W:-} ]]; then :; else read -r H W < <(tmux display-message -p '#{client_height} #{client_width}'); fi
+read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
 cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
 title_w=$((cell_w - 2))
 band_h=$(((H - 9) / VROWS)); ((band_h < 4)) && band_h=4
@@ -80,9 +85,8 @@ mid_y=$((band_h + 3))
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
-declare -a IDS TITLES ALERTS WIDX WIN_SESS
+declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES SESS_MED
 nsess=0; i=0
-cur_sid=$(tmux display-message -p '#{session_id}')
 while IFS=$'\t' read -r sid sname; do
   SESS_IDS[$nsess]=$sid
   SESS_NAMES[$nsess]=$sname
@@ -95,10 +99,7 @@ while IFS=$'\t' read -r sid sname; do
     WIN_SESS[$i]=$sid
     suffix=""
     if ((panes > 1)); then suffix=" ⧉ $panes"; fi
-    TITLES[$i]=$(printf '[%s] %s │ %s │ %s%s' "$widx" "$wname" "$wtitle" "$wpath" "$suffix" | trunc "$title_w")
-    tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
-    # shellcheck disable=SC2178
-    mapfile -t "SNAP_$i" < "$TMP/$i"
+    RAW_TITLES[$i]="[$widx] $wname │ $wtitle │ $wpath$suffix"
     i=$((i + 1)); c=$((c + 1))
   done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
   SESS_COUNT[$nsess]=$c
@@ -106,11 +107,13 @@ while IFS=$'\t' read -r sid sname; do
 done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
 n=$i
 [ "$n" -eq 0 ] && { rm -rf "$TMP"; exit 0; }
+# Titles truncate in one python pass; snapshots fault in per visible page.
+mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
+prof "meta n=$n nsess=$nsess"
 
 # Start on the current window, not always cell 0.
 sel=0
 sess=0
-cur=$(tmux display-message -p '#{window_id}')
 for ((k = 0; k < n; k++)); do
   if [[ ${IDS[$k]} == "$cur" ]]; then sel=$k; break; fi
 done
@@ -126,6 +129,20 @@ if (( cnt >= 3 )); then
 else
   top=$rstart
 fi
+# On-demand snapshots: only the visible page holds captures; a present
+# $TMP/$idx file is the loaded flag. draw() ensures its page, so scrolls
+# and session switches fault missing cells in synchronously.
+load_cell() {
+  [[ -f $TMP/$1 ]] && return 0
+  tmux capture-pane -pe -t "${IDS[$1]}" 2>/dev/null | trunc "$cell_w" "$snap_h" > "$TMP/$1"
+  # shellcheck disable=SC2178
+  mapfile -t "SNAP_$1" < "$TMP/$1"
+}
+ensure_visible() {
+  local e=$((top + COLS * VROWS)) k
+  ((e > send)) && e=$send
+  for ((k = top; k < e; k++)); do load_cell "$k"; done
+}
 bar=0
 
 saved_stty=$(stty -g 2>/dev/null || true)
@@ -204,6 +221,8 @@ switch_sess() {
   draw
 }
 draw() {
+  ensure_visible
+  if [[ -z ${DREW:-} ]]; then DREW=1; prof "ready n=$n"; fi
   FRAME=$'\x1b[?25l'
   # Arm-aware frame: same geometry/sizes; each junction picks the glyph
   # matching its present arms (b0..b3 = visible occupancy of the 4 cells),
@@ -229,7 +248,8 @@ draw() {
   if (( b1 )); then seg+='╮'; else seg+=' '; fi
   put 0 0 "$seg"
   nput 0 2 ' Windows '
-  sbar=$(sess_label); sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12; sblen=${#sbar}
+  [[ -n ${SESS_MED[$sess]+_} ]] || SESS_MED[$sess]=$(sess_label)
+  sbar=${SESS_MED[$sess]}; sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12; sblen=${#sbar}
   if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
   nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
