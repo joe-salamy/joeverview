@@ -153,6 +153,61 @@ grep -qF 'swap-window' "$T/calls-n" && fail "comma-dot moved"
 run_picker n2 '\x7fq' "$T/out-o" "$T/calls-o"
 grep -qF 'kill-window' "$T/calls-o" && fail "del killed"
 
+# (p) 1->2 sessions: first session gains arrows after N + paging back
+DYN="$T/dyn-p"; mkdir -p "$DYN"
+cp "$FIXBASE/n1/sessions" "$DYN/sessions"
+cp "$FIXBASE/n1/windows_s0" "$DYN/windows_s0"
+printf '@w9\t0\twin9\tt9\t/tmp/w9\t1\t\n' > "$DYN/windows_snew"
+RP=$(mktemp -d "$T/run-p.XXXXXX"); mkdir -p "$RP/bin"
+cat > "$RP/bin/tmux" <<'PSTUB'
+#!/usr/bin/env bash
+cmd=${1:-}; shift || true
+case "$cmd" in
+  display-message)
+    case "$*" in
+      *client_height*) printf '30 60\n' ;;
+      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
+      *pane_current_path*) printf '/tmp\n' ;;
+    esac
+    exit 0
+    ;;
+  list-sessions)
+    cat "$FIXDIR/sessions"
+    ;;
+  list-windows)
+    sid=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then sid=$a; fi
+      prev=$a
+    done
+    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+    cat "$FIXDIR/windows_$key"
+    ;;
+  capture-pane)
+    printf 'cap-line1\ncap-line2\n'
+    ;;
+  new-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if ! grep -q 'snew' "$FIXDIR/sessions"; then
+      printf '$snew\tsecond\n' >> "$FIXDIR/sessions"
+    fi
+    printf '$snew\n'
+    ;;
+  select-window|switch-client|kill-window|new-window|kill-session|swap-window|select-pane|rename-window|rename-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
+    ;;
+  *) exit 0 ;;
+esac
+PSTUB
+chmod +x "$RP/bin/tmux"
+: > "$T/calls-p"; : > "$RP/err"
+FIXDIR="$DYN" CALL_LOG="$T/calls-p" PATH="$RP/bin:$PATH" \
+  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+  '\x1b[AN\x1b[Dq' "$REPO" "$T/out-p" "$RP/err"
+grep -qF 'new-session' "$T/calls-p" || fail "medallion-1to2 new-session"
+grep -qF '←  main  →' "$T/out-p" || fail "medallion-1to2 first-session-arrows"
+
 # (b) again over scenario outputs
 for f in "$T"/out-*; do
   grep -qF '\x1b' "$f" && fail "literal-x1b in $f"

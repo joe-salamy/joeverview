@@ -86,11 +86,17 @@ declare -A SNAP SESS_MED SESS_MEDW
 # are keyed by stable window_id, so surviving cells keep their captures
 # across create/kill refreshes; only missing cells fault in via
 # ensure_visible(). Stale windows/sessions are garbage-collected here.
-# Session medallions are keyed by session_id for the same reason.
+# Session medallions are keyed by session_id, but their arrow decoration
+# and max width depend on nsess>1, so they are dropped whenever the
+# session count or a session name changes (not just for dead IDs).
 # Returns 1 when no windows remain.
 load_data() {
-  local sid sname wid widx wname wtitle wpath panes alert suffix c k
-  local -A seen sess_seen
+  local sid sname wid widx wname wtitle wpath panes alert suffix c k old_nsess
+  local -A seen sess_seen old_names
+  old_nsess=${nsess:-0}
+  if [[ -n ${SESS_IDS[@]+x} ]]; then
+    for ((k = 0; k < old_nsess; k++)); do old_names[${SESS_IDS[$k]}]=${SESS_NAMES[$k]}; done
+  fi
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
   IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=()
   nsess=0; i=0
@@ -116,16 +122,28 @@ load_data() {
   done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
   n=$i
   [ "$n" -eq 0 ] && return 1
-  # Drop snapshots/medallions for dead IDs; survivors keep their cache so
+  # Drop snapshots for dead IDs; survivors keep their cache so
   # add/delete only captures the missing cells in ensure_visible().
   if [[ -n ${SNAP[@]+x} ]]; then
     for k in "${!SNAP[@]}"; do
       if [[ -z ${seen[$k]+_} ]]; then unset "SNAP[$k]"; rm -f "$TMP/$k" 2>/dev/null || true; fi
     done
   fi
-  if [[ -n ${SESS_MED[@]+x} ]]; then
+  if (( nsess != old_nsess )); then
+    # Arrow decoration and maxw depend on nsess>1: every cached medallion is stale.
+    SESS_MED=(); SESS_MEDW=()
+  elif [[ -n ${SESS_MED[@]+x} ]]; then
     for k in "${!SESS_MED[@]}"; do
       if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED[$k]" "SESS_MEDW[$k]"; fi
+    done
+    # Out-of-band renames: explicit renames already drop their own entry.
+    for ((k = 0; k < nsess; k++)); do
+      sid=${SESS_IDS[$k]}
+      if [[ -n ${SESS_MED[$sid]+_} && -n ${old_names[$sid]+_} ]]; then
+        if [[ "${old_names[$sid]}" != "${SESS_NAMES[$k]}" ]]; then
+          unset "SESS_MED[$sid]" "SESS_MEDW[$sid]"
+        fi
+      fi
     done
   fi
   # Titles truncate in one python pass; snapshots fault in per visible page.
