@@ -128,8 +128,9 @@ paint_row() {
   local r=$1 roff base idx c coff
   if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
   base=$((top + r * COLS))
+  # Subtractive frame: skip border ticks with no occupied owner; never new glyphs.
   at "$roff" 0
-  printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
+  (( base < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
   for ((c = 0; c < COLS; c++)); do
     idx=$((base + c))
     if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
@@ -138,36 +139,70 @@ paint_row() {
       else printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 0)"; fi
     fi
   done
-  printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
-  printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
+  (( base < n || base + 1 < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
+  (( base + 1 < n )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
+  return 0
 }
 footext() { hi=$((top + 1)); lo=$((top + COLS * VROWS)); ((lo > n)) && lo=$n; printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$n"; }
 draw() {
   FRAME=$'\x1b[?25l'
-  seg='╭'
+  # Subtractive frame: same geometry/sizes, only skip segments whose both
+  # sides are empty (erased = blank, never a new glyph). Row0-left always
+  # exists while drawing, so top-left is never erased.
+  if (( top < n )); then seg='╭'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then seg+='┬'; else seg+='─'; fi
+    if ((x == vx)); then
+      if (( top < n || top + 1 < n )); then seg+='┬'; else seg+=' '; fi
+    elif ((x < vx)); then
+      if (( top < n )); then seg+='─'; else seg+=' '; fi
+    else
+      if (( top + 1 < n )); then seg+='─'; else seg+=' '; fi
+    fi
   done
-  put 0 0 "$seg╮"
+  if (( top + 1 < n )); then seg+='╮'; else seg+=' '; fi
+  put 0 0 "$seg"
   nput 0 2 ' Windows '
   for ((y = 1; y <= bot_y - 1; y++)); do
-    nput "$y" 0 '│'
-    nput "$y" $((W - 1)) '│'
+    ((y == mid_y)) && continue
+    if ((y < mid_y)); then
+      (( top < n )) && nput "$y" 0 '│'
+      (( top + 1 < n )) && nput "$y" $((W - 1)) '│'
+    else
+      (( top + 2 < n )) && nput "$y" 0 '│'
+      (( top + 3 < n )) && nput "$y" $((W - 1)) '│'
+    fi
   done
-  seg='╰'
+  if (( top + 2 < n )); then seg='╰'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then seg+='┴'; else seg+='─'; fi
+    if ((x == vx)); then
+      if (( top + 2 < n || top + 3 < n )); then seg+='┴'; else seg+=' '; fi
+    elif ((x < vx)); then
+      if (( top + 2 < n )); then seg+='─'; else seg+=' '; fi
+    else
+      if (( top + 3 < n )); then seg+='─'; else seg+=' '; fi
+    fi
   done
-  put "$bot_y" 0 "$seg╯"
+  if (( top + 3 < n )); then seg+='╯'; else seg+=' '; fi
+  put "$bot_y" 0 "$seg"
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
-    nput "$y" "$vx" '│'
+    if ((y < mid_y)); then
+      (( top < n || top + 1 < n )) && nput "$y" "$vx" '│'
+    else
+      (( top + 2 < n || top + 3 < n )) && nput "$y" "$vx" '│'
+    fi
   done
-  seg='├'
+  if (( top < n || top + 2 < n )); then seg='├'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then seg+='┼'; else seg+='─'; fi
+    if ((x == vx)); then
+      if (( top < n || top + 1 < n || top + 2 < n || top + 3 < n )); then seg+='┼'; else seg+=' '; fi
+    elif ((x < vx)); then
+      if (( top < n || top + 2 < n )); then seg+='─'; else seg+=' '; fi
+    else
+      if (( top + 1 < n || top + 3 < n )); then seg+='─'; else seg+=' '; fi
+    fi
   done
-  seg+='┤'
+  if (( top + 1 < n || top + 3 < n )); then seg+='┤'; else seg+=' '; fi
   put "$mid_y" 0 "$seg"
   for ((r = 0; r < VROWS; r++)); do
     if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
@@ -194,9 +229,15 @@ draw() {
     if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
     for ((l = 0; l < band_h; l++)); do
       y=$((roff + l))
-      nput "$y" 0 '│'
-      nput "$y" "$vx" '│'
-      nput "$y" $((W - 1)) '│'
+      if ((r == 0)); then
+        (( top < n )) && nput "$y" 0 '│'
+        (( top < n || top + 1 < n )) && nput "$y" "$vx" '│'
+        (( top + 1 < n )) && nput "$y" $((W - 1)) '│'
+      else
+        (( top + 2 < n )) && nput "$y" 0 '│'
+        (( top + 2 < n || top + 3 < n )) && nput "$y" "$vx" '│'
+        (( top + 3 < n )) && nput "$y" $((W - 1)) '│'
+      fi
     done
   done
   put $((H - 1)) 0 "$(footext)"
