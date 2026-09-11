@@ -4,7 +4,7 @@
 # top row focuses the session switcher (Left/Right pages sessions, Down back),
 # 0-9 jumps to the window with that index in this session, Enter jumps to the
 # cell (or attaches to the focused session), q/Esc cancels. Each cell shows its
-# title line with a ⧉N badge when the window holds N tmux panes, then the
+# title line with a ⧉ N badge when the window holds N tmux panes, then the
 # BOTTOM-LEFT of the active pane capture (last non-blank lines, truncated to
 # cell width at full resolution — cut off, never scaled). Down from the bottom
 # row scrolls.
@@ -65,7 +65,11 @@ else:
 sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
 trunc() { python3 -c "$PY" "$@"; }
 
-H=$(tmux display-message -p '#{pane_height}'); W=$(tmux display-message -p '#{pane_width}')
+# Popup canvas is the fullscreen popup's own tty, not the invoker pane:
+# #{pane_height}/#{pane_width} shrink the grid when opened from a split.
+if ! read -r H W < <(stty size 2>/dev/null) || [[ -z ${H:-} || -z ${W:-} ]]; then
+  H=$(tmux display-message -p '#{client_height}'); W=$(tmux display-message -p '#{client_width}')
+fi
 cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
 title_w=$((cell_w - 2))
 band_h=$(((H - 9) / VROWS)); ((band_h < 4)) && band_h=4
@@ -90,7 +94,7 @@ while IFS=$'\t' read -r sid sname; do
     ALERTS[$i]=$alert
     WIN_SESS[$i]=$sid
     suffix=""
-    if ((panes > 1)); then suffix=" ⧉$panes"; fi
+    if ((panes > 1)); then suffix=" ⧉ $panes"; fi
     TITLES[$i]=$(printf '[%s] %s │ %s │ %s%s' "$widx" "$wname" "$wtitle" "$wpath" "$suffix" | trunc "$title_w")
     tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
     # shellcheck disable=SC2178

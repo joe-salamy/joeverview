@@ -4,7 +4,7 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 ## `prefix o` — window grid
 
-2×2 snapshot grid, one session at a time. Each cell: `[index] name │ task │ path` title (+ `⧉N` when the window holds N tmux panes) + bottom-left of the window's active pane.
+2×2 snapshot grid, one session at a time. Each cell: `[index] name │ task │ path` title (+ `⧉ N` when the window holds N tmux panes) + bottom-left of the window's active pane.
 
 | key | action |
 |---|---|
