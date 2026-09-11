@@ -80,19 +80,19 @@ mid_y=$((band_h + 3))
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
-declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES SESS_MED SESS_MEDW
-declare -A SNAP
-# Rebuild session/window metadata from tmux. Snapshot files ($TMP/$idx) and
-# SNAP_* vars are keyed by global index, so positions shift on create/kill:
-# both are dropped here and faulted back in by ensure_visible(). Also drops
-# the session-medallion cache. Returns 1 when no windows remain.
+declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
+declare -A SNAP SESS_MED SESS_MEDW
+# Rebuild session/window metadata from tmux. Snapshots (SNAP + $TMP files)
+# are keyed by stable window_id, so surviving cells keep their captures
+# across create/kill refreshes; only missing cells fault in via
+# ensure_visible(). Stale windows/sessions are garbage-collected here.
+# Session medallions are keyed by session_id for the same reason.
+# Returns 1 when no windows remain.
 load_data() {
-  local sid sname wid widx wname wtitle wpath panes alert suffix c old_n
-  old_n=${n:-0}
+  local sid sname wid widx wname wtitle wpath panes alert suffix c k
+  local -A seen sess_seen
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
-  IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=(); SESS_MED=(); SESS_MEDW=()
-  rm -f "$TMP"/* 2>/dev/null || true
-  SNAP=()
+  IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=()
   nsess=0; i=0
   while IFS=$'\t' read -r sid sname; do
     SESS_IDS[$nsess]=$sid
@@ -104,16 +104,30 @@ load_data() {
       WIDX[$i]=$widx
       ALERTS[$i]=$alert
       WIN_SESS[$i]=$sid
+      seen[$wid]=1
       suffix=""
       if ((panes > 1)); then suffix=" ⧉ $panes"; fi
       RAW_TITLES[$i]="[$widx] $wname │ $wtitle │ $wpath$suffix"
       i=$((i + 1)); c=$((c + 1))
     done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
     SESS_COUNT[$nsess]=$c
+    sess_seen[$sid]=1
     nsess=$((nsess + 1))
   done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
   n=$i
   [ "$n" -eq 0 ] && return 1
+  # Drop snapshots/medallions for dead IDs; survivors keep their cache so
+  # add/delete only captures the missing cells in ensure_visible().
+  if [[ -n ${SNAP[@]+x} ]]; then
+    for k in "${!SNAP[@]}"; do
+      if [[ -z ${seen[$k]+_} ]]; then unset "SNAP[$k]"; rm -f "$TMP/$k" 2>/dev/null || true; fi
+    done
+  fi
+  if [[ -n ${SESS_MED[@]+x} ]]; then
+    for k in "${!SESS_MED[@]}"; do
+      if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED[$k]" "SESS_MEDW[$k]"; fi
+    done
+  fi
   # Titles truncate in one python pass; snapshots fault in per visible page.
   mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
   unset RAW_TITLES
@@ -172,6 +186,10 @@ do_new_window() {
   else
     newid=$(tmux new-window -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
   fi
+  # Drop any stale capture under a recycled window_id so ensure_visible()
+  # faults the new window in fresh (ids are unique in practice).
+  unset "SNAP[$newid]" 2>/dev/null || true
+  rm -f "$TMP/$newid" 2>/dev/null || true
   refresh_to "$target" "$newid" 0
 }
 # Kill the selected window (grid focus only); stays at the same offset so
@@ -194,13 +212,17 @@ for ((k = 0; k < nsess; k++)); do
 done
 s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
 place_top
-# On-demand snapshots: only the visible page holds captures; a present
-# $TMP/$idx file is the loaded flag. draw() ensures its page, so scrolls
-# and session switches fault missing cells in synchronously.
+# On-demand snapshots keyed by stable window_id: a present SNAP entry (or
+# its $TMP/$wid backing file) is the loaded flag. draw() ensures its page,
+# so scrolls and session switches fault missing cells in synchronously,
+# while add/delete refreshes reuse surviving cells and capture only the new one.
 load_cell() {
-  [[ -f "$TMP/$1" ]] && return 0
-  tmux capture-pane -pe -t "${IDS[$1]}" 2>/dev/null | trunc "$cell_w" "$snap_h" > "$TMP/$1"
-  SNAP[$1]=$(<"$TMP/$1")
+  local wid=${IDS[$1]} f
+  f="$TMP/$wid"
+  [[ -n ${SNAP[$wid]+_} ]] && return 0
+  if [[ -f $f ]]; then SNAP[$wid]=$(<"$f"); return 0; fi
+  tmux capture-pane -pe -t "$wid" 2>/dev/null | trunc "$cell_w" "$snap_h" > "$f"
+  SNAP[$wid]=$(<"$f")
 }
 ensure_visible() {
   local e=$((top + COLS * VROWS)) k
@@ -319,8 +341,8 @@ draw() {
   (( top + 3 < send )) && b3=1 || b3=0
   hborder 0 '╭' '╮' "$b0" "$b1" '┬' '╮' '╭'
   nput 0 2 ' Windows '
-  [[ -n ${SESS_MED[$sess]+_} ]] || { SESS_MED[$sess]=$(sess_label); SESS_MEDW[$sess]=$(printf '%s' "${SESS_MED[$sess]}" | vw_of); }
-  sbar=${SESS_MED[$sess]}; sblen=${SESS_MEDW[$sess]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
+  [[ -n ${SESS_MED[${SESS_IDS[$sess]}]+_} ]] || { SESS_MED[${SESS_IDS[$sess]}]=$(sess_label); SESS_MEDW[${SESS_IDS[$sess]}]=$(printf '%s' "${SESS_MED[${SESS_IDS[$sess]}]}" | vw_of); }
+  sbar=${SESS_MED[${SESS_IDS[$sess]}]}; sblen=${SESS_MEDW[${SESS_IDS[$sess]}]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
   if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
   nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
@@ -384,7 +406,7 @@ draw() {
       if ((idx < send)); then
         if ((idx == sel && bar == 0)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
         else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
-        mapfile -t lines <<<"${SNAP[$idx]}"
+        mapfile -t lines <<<"${SNAP[${IDS[$idx]}]}"
         for ((l = 0; l < snap_h; l++)); do
           put $((roff + 1 + l)) "$coff" "${lines[$l]:-}"
         done
@@ -491,6 +513,10 @@ while IFS= read -rsn1 k; do
     # fat-finger guard beside WASD. Disabled on the session bar.
     do_kill_window; continue
   elif [[ $k == [rR] ]]; then
+    # Explicit refresh: drop all cached captures/medallions so pane content
+    # and renamed sessions fault in fresh (c/X reuse the cache on purpose).
+    SNAP=(); SESS_MED=(); SESS_MEDW=()
+    rm -f "$TMP"/* 2>/dev/null || true
     if ((bar)); then refresh_to "${SESS_IDS[$sess]}" "" 1
     else refresh_to "${SESS_IDS[$sess]}" "${IDS[$sel]}" 0; fi
     continue
