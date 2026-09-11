@@ -192,21 +192,28 @@ switch_sess() {
 }
 draw() {
   FRAME=$'\x1b[?25l'
-  # Subtractive frame: same geometry/sizes, only skip segments whose both
-  # sides are empty (erased = blank, never a new glyph). Row0-left always
-  # exists while drawing, so top-left is never erased. Bounds are the visible
-  # session's [top, send), never the global window list.
-  if (( top < send )); then seg='╭'; else seg=' '; fi
+  # Arm-aware frame: same geometry/sizes; each junction picks the glyph
+  # matching its present arms (b0..b3 = visible occupancy of the 4 cells),
+  # so edges close with corners instead of dangling tees/crosses.
+  # Bounds are the visible session's [top, send), never the global list.
+  (( top < send )) && b0=1 || b0=0
+  (( top + 1 < send )) && b1=1 || b1=0
+  (( top + 2 < send )) && b2=1 || b2=0
+  (( top + 3 < send )) && b3=1 || b3=0
+  if (( b0 )); then seg='╭'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top < send || top + 1 < send )); then seg+='┬'; else seg+=' '; fi
+      if (( b0 && b1 )); then seg+='┬'
+      elif (( b0 )); then seg+='╮'
+      elif (( b1 )); then seg+='╭'
+      else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top < send )); then seg+='─'; else seg+=' '; fi
+      if (( b0 )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 1 < send )); then seg+='─'; else seg+=' '; fi
+      if (( b1 )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 1 < send )); then seg+='╮'; else seg+=' '; fi
+  if (( b1 )); then seg+='╮'; else seg+=' '; fi
   put 0 0 "$seg"
   nput 0 2 ' Windows '
   sbar=$(sess_label); sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12
@@ -222,17 +229,20 @@ draw() {
       (( top + 3 < send )) && nput "$y" $((W - 1)) '│'
     fi
   done
-  if (( top + 2 < send )); then seg='╰'; else seg=' '; fi
+  if (( b2 )); then seg='╰'; else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top + 2 < send || top + 3 < send )); then seg+='┴'; else seg+=' '; fi
+      if (( b2 && b3 )); then seg+='┴'
+      elif (( b2 )); then seg+='╯'
+      elif (( b3 )); then seg+='╰'
+      else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top + 2 < send )); then seg+='─'; else seg+=' '; fi
+      if (( b2 )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 3 < send )); then seg+='─'; else seg+=' '; fi
+      if (( b3 )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 3 < send )); then seg+='╯'; else seg+=' '; fi
+  if (( b3 )); then seg+='╯'; else seg+=' '; fi
   put "$bot_y" 0 "$seg"
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
@@ -242,17 +252,37 @@ draw() {
       (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
     fi
   done
-  if (( top < send || top + 2 < send )); then seg='├'; else seg=' '; fi
+  if (( b0 && b2 )); then seg='├'
+  elif (( b0 )); then seg='└'
+  elif (( b2 )); then seg='┌'
+  else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      if (( top < send || top + 1 < send || top + 2 < send || top + 3 < send )); then seg+='┼'; else seg+=' '; fi
+      l=$(( b0 || b2 )); r=$(( b1 || b3 )); u=$(( b0 || b1 )); d=$(( b2 || b3 ))
+      if (( l && r && u && d )); then seg+='┼'
+      elif (( l && r && u )); then seg+='┴'
+      elif (( l && r && d )); then seg+='┬'
+      elif (( l && u && d )); then seg+='┤'
+      elif (( r && u && d )); then seg+='├'
+      elif (( l && r )); then seg+='─'
+      elif (( u && d )); then seg+='│'
+      elif (( l && u )); then seg+='┘'
+      elif (( l && d )); then seg+='┐'
+      elif (( r && u )); then seg+='└'
+      elif (( r && d )); then seg+='┌'
+      elif (( l || r )); then seg+='─'
+      elif (( u || d )); then seg+='│'
+      else seg+=' '; fi
     elif ((x < vx)); then
-      if (( top < send || top + 2 < send )); then seg+='─'; else seg+=' '; fi
+      if (( b0 || b2 )); then seg+='─'; else seg+=' '; fi
     else
-      if (( top + 1 < send || top + 3 < send )); then seg+='─'; else seg+=' '; fi
+      if (( b1 || b3 )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( top + 1 < send || top + 3 < send )); then seg+='┤'; else seg+=' '; fi
+  if (( b1 && b3 )); then seg+='┤'
+  elif (( b1 )); then seg+='┘'
+  elif (( b3 )); then seg+='┐'
+  else seg+=' '; fi
   put "$mid_y" 0 "$seg"
   for ((r = 0; r < VROWS; r++)); do
     if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
