@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Arrow-navigated 2x2 snapshot grid for tmux windows. Bound to `prefix o`.
-# Static captures at launch (reopen to refresh). No typing: arrows move,
-# Enter jumps, q/Esc cancels. Each cell shows its title line, then the
+# Static captures at launch (reopen to refresh). Arrows/WASD move, 0-9 jumps
+# to the window with that index, Enter jumps to selection, q/Esc cancels. Each cell shows its title line, then the
 # BOTTOM-LEFT of the capture (last non-blank lines, truncated to cell width
 # at full resolution — cut off, never scaled). Down from the bottom row scrolls.
 set -u
@@ -71,10 +71,11 @@ bot_y=$((H - 2))
 mid_y=$((band_h + 3))
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
-declare -a IDS TITLES ALERTS
+declare -a IDS TITLES ALERTS WIDX
 i=0
 while IFS=$'\t' read -r wid widx wname wtitle wpath alert; do
   IDS[$i]=$wid
+  WIDX[$i]=$widx
   ALERTS[$i]=$alert
   TITLES[$i]=$(printf '[%s] %s │ %s │ %s' "$widx" "$wname" "$wtitle" "$wpath" | trunc "$title_w")
   tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
@@ -140,7 +141,7 @@ paint_row() {
   printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
   printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
 }
-footext() { hi=$((top + 1)); lo=$((top + COLS * VROWS)); ((lo > n)) && lo=$n; printf '↑↓←→/WASD move · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$n"; }
+footext() { hi=$((top + 1)); lo=$((top + COLS * VROWS)); ((lo > n)) && lo=$n; printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$n"; }
 draw() {
   FRAME=$'\x1b[?25l'
   seg='╭'
@@ -231,6 +232,13 @@ while IFS= read -rsn1 k; do
     exit 0
   elif [[ $k == [qQ] ]]; then
     break
+  elif [[ $k == [0-9] ]]; then
+    for ((j = 0; j < n; j++)); do
+      if [[ ${WIDX[$j]} == "$k" ]]; then
+        tmux select-window -t "${IDS[$j]}"
+        exit 0
+      fi
+    done
   elif [[ $k == [wW] ]]; then
     ((sel >= COLS)) && sel=$((sel - COLS))
   elif [[ $k == [sS] ]]; then

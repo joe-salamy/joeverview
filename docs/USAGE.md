@@ -4,11 +4,12 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 ## `prefix o` — window grid
 
-2×2 snapshot grid, no typing. Each cell: `[index] name │ task │ path` title + bottom-left of the window's visible pane.
+2×2 snapshot grid. Each cell: `[index] name │ task │ path` title + bottom-left of the window's visible pane.
 
 | key | action |
 |---|---|
 | arrows / WASD | move |
+| `0`-`9` | jump to window with that index (no match = ignore) |
 | `Enter` | jump to window |
 | `q` / `Esc` | cancel |
 | down from bottom row | scroll |
