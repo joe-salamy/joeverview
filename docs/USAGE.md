@@ -8,7 +8,7 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 | key | action |
 |---|---|
-| arrows / WASD | move (Up from the top row focuses the session bar) |
+| arrows / WASD | move (Up from the top row focuses the session bar, multiple sessions only) |
 | `←`/`→` on the session bar | switch session |
 | `0`-`9` | jump to window with that index in this session (no match = ignore) |
 | `Enter` | jump to window (on the session bar: attach to session) |

@@ -167,19 +167,28 @@ paint_row() {
   (( base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
   return 0
 }
-# Session switcher for the top border: truncated to fit between the
+# Session medallion for the top border: padded arrows when paging is
+# possible, padded bare name when it is not (single session hides the bar
+# entirely — no focus, no hint). Truncated to fit between the
 # ' Windows ' stamp and the corners. Focus folds reverse like cell titles.
 sess_label() {
-  local maxw=$((W - 24)) nm
-  ((maxw < 8)) && maxw=8
-  nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-  printf '← %s →' "$nm"
+  local maxw nm
+  if ((nsess > 1)); then
+    maxw=$((W - 34)); ((maxw < 8)) && maxw=8
+    nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+    printf '  ←  %s  →  ' "$nm"
+  else
+    maxw=$((W - 28)); ((maxw < 8)) && maxw=8
+    nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+    printf '  %s  ' "$nm"
+  fi
 }
 footext() {
   local rel=$((top - s0)) cnt=$((send - s0)) hi lo
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
   if ((bar)); then printf '←/→ switch session · ↓ back · Enter attach · q cancel · session %d/%d' "$((sess + 1))" "$nsess"
-  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"
+  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -354,7 +363,7 @@ while IFS= read -rsn1 k; do
     case $d in
       A) if ((bar)); then continue
          elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-         else bar=1; draw; continue; fi ;;
+         elif ((nsess > 1)); then bar=1; draw; continue; fi ;;
       B) if ((bar)); then bar=0; draw; continue
          else move_down; fi ;;
       C) if ((bar)); then switch_sess 1; continue
@@ -377,7 +386,7 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [wW] ]]; then
     if ((bar)); then continue
     elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-    else bar=1; draw; continue; fi
+    elif ((nsess > 1)); then bar=1; draw; continue; fi
   elif [[ $k == [sS] ]]; then
     if ((bar)); then bar=0; draw; continue
     else move_down; fi
