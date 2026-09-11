@@ -101,9 +101,9 @@ grep -qF 'select-window -t @w2' "$T/calls-d" || fail "digit-jump log"
 run_picker six '\x1b[B\x1b[B\x1b[B\x1b[Bq' "$T/out-e"
 grep -qF '[5] win5' "$T/out-e" || fail "page-follow content"
 
-# (f) n2 fed . swaps selected window right (@w0 <-> @w1)
+# (f) n2 fed > swaps selected window right (@w0 <-> @w1)
 : > "$T/calls-f"
-run_picker n2 '.q' "$T/out-f" "$T/calls-f"
+run_picker n2 '>q' "$T/out-f" "$T/calls-f"
 grep -qF 'swap-window -s @w0 -t @w1' "$T/calls-f" || fail "move-right log"
 
 # (g) multi fed Up+n creates a session from the bar (grid n is ignored)
@@ -137,6 +137,21 @@ grep -qF 'rename-window -t @w0 win-new' "$T/calls-k" || fail "rename-window log"
 : > "$T/calls-l"
 run_picker multi '\x1b[ARsess-new\nq' "$T/out-l" "$T/calls-l"
 grep -qF 'rename-session -t $s0 sess-new' "$T/calls-l" || fail "rename-session log"
+
+# (m) n2 fed R+Esc aborts the rename (no rename-window call, q quits)
+: > "$T/calls-m"
+run_picker n2 'R\x1bq' "$T/out-m" "$T/calls-m"
+grep -qF 'rename-window' "$T/calls-m" && fail "esc-abort renamed"
+
+# (n) n2 fed ,/. do nothing (move is < > only)
+: > "$T/calls-n"
+run_picker n2 ',.q' "$T/out-n" "$T/calls-n"
+grep -qF 'swap-window' "$T/calls-n" && fail "comma-dot moved"
+
+# (o) n2 fed Del does nothing (kill is X only)
+: > "$T/calls-o"
+run_picker n2 '\x7fq' "$T/out-o" "$T/calls-o"
+grep -qF 'kill-window' "$T/calls-o" && fail "del killed"
 
 # (b) again over scenario outputs
 for f in "$T"/out-*; do

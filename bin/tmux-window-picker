@@ -234,17 +234,37 @@ do_move_window() {
   tmux swap-window -s "$wid" -t "$target" 2>/dev/null || return 0
   refresh_to "${SESS_IDS[$sess]}" "$wid" 0
 }
-# Cooked-line rename prompt on the footer row: leaves raw nav mode, shows
-# the cursor, reads one line, restores raw mode. Sets READ_NAME ("" = keep).
+# Rename prompt on the footer row: leaves nav mode, shows the cursor, reads
+# a line char-by-char with manual echo. Enter submits, Backspace erases,
+# lone Esc aborts ("" = keep). Escape sequences are not text: Esc aborts and
+# any trailing bytes reprocess as nav keys. Sets READ_NAME ("" = keep).
 # Called directly (never in $()) so the prompt reaches the popup tty.
 read_name() {
-  local kind=$1 old=$2
+  local kind=$1 old=$2 ch buf=""
   READ_NAME=""
   at $((H - 1)) 0
   printf '\x1b[?25h'
-  stty echo icanon 2>/dev/null || true
+  stty -echo -icanon min 1 time 0 2>/dev/null || true
   printf 'rename %s [%s]: ' "$kind" "$old"
-  IFS= read -r READ_NAME 2>/dev/null || READ_NAME=""
+  while IFS= read -rsn1 ch || { buf=""; break; }; do
+    if [[ -z ${ch:-} || $ch == $'\n' || $ch == $'\r' ]]; then
+      break
+    elif [[ $ch == $'\x1b' ]]; then
+      buf=""
+      break
+    elif [[ $ch == $'\x7f' || $ch == $'\b' ]]; then
+      if [[ -n $buf ]]; then
+        buf=${buf%?}
+        printf '\b \b'
+      fi
+    elif [[ $ch < $' ' ]]; then
+      continue
+    else
+      buf+=$ch
+      printf '%s' "$ch"
+    fi
+  done
+  READ_NAME=$buf
   stty -echo -icanon min 1 time 0 2>/dev/null || true
   printf '\x1b[?25l'
 }
@@ -368,9 +388,9 @@ footext() {
   local rel=$((top - s0)) cnt=$((send - s0)) hi lo
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
   if ((bar)); then
-    if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X/Del kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
+    if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
     else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
-  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · c new-window · R rename · ,/.<> move · X/Del kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · c new-window · R rename · < > move window · X kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -587,14 +607,14 @@ while IFS= read -rsn1 k; do
     # Session creation lives on the session bar (strict two-mode).
     (( bar )) || continue
     do_new_session; continue
-  elif [[ $k == "," || $k == "<" ]]; then
+  elif [[ $k == "<" ]]; then
     do_move_window -1; continue
-  elif [[ $k == "." || $k == ">" ]]; then
+  elif [[ $k == ">" ]]; then
     do_move_window 1; continue
-  elif [[ $k == X || $k == $'\x7f' ]]; then
-    # Capital-only kill (plus Del alias): lowercase x stays ignored as a
-    # fat-finger guard beside WASD. Grid focus kills the window, bar focus
-    # kills the viewed session.
+  elif [[ $k == X ]]; then
+    # Capital-only kill: lowercase x stays ignored as a fat-finger guard
+    # beside WASD. Grid focus kills the window, bar focus kills the viewed
+    # session.
     if (( bar )); then do_kill_session; else do_kill_window; fi; continue
   elif [[ $k == r ]]; then
     # Explicit refresh: drop all cached captures/medallions so pane content
