@@ -40,4 +40,4 @@ Titles carry a launch-time `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` 
 
 Field-order trap that bit: `read` with `IFS=$'\t'` treats tab as IFS whitespace, so an empty field collapses and later fields shift left. The bell/activity flag field is empty most of the time, so it must stay last — `#{window_panes}` (never empty) goes before it.
 
-The switcher renders as a padded medallion (`  ←  name  →  `) so the arrows clear the border dashes. With a single session it degrades to the bare name with no bar focus and no footer hint — the grid behaves exactly like the pre-session version.
+The switcher renders as a padded medallion (`  ←  name  →  `, `  name  ` when single) so the arrows clear the border dashes. With a single session it degrades to the bare name with no bar focus and no footer hint — the grid behaves exactly like the pre-session version. The mid divider is notched for the one row passing under the medallion, so the column border never touches the session name.

@@ -225,7 +225,7 @@ draw() {
   if (( b1 )); then seg+='╮'; else seg+=' '; fi
   put 0 0 "$seg"
   nput 0 2 ' Windows '
-  sbar=$(sess_label); sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12
+  sbar=$(sess_label); sbx=$(((W - ${#sbar}) / 2)); ((sbx < 12)) && sbx=12; sblen=${#sbar}
   if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
   nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
@@ -256,7 +256,9 @@ draw() {
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      (( top < send || top + 1 < send )) && nput "$y" "$vx" '│'
+      # Notch the divider where it passes under the session medallion,
+      # so the column border never touches the session name.
+      if (( top < send || top + 1 < send )) && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; fi
     else
       (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
     fi
