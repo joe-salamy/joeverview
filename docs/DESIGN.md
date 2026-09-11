@@ -10,7 +10,7 @@ Why: bare `-t 0`/`-t 1` resolve against the *active* window/session, not window 
 
 ## Snapshot grid, not a live mirror
 
-`prefix o` reads window metadata once at launch (`list-sessions` + per-session `list-windows`), truncates all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in synchronously. Reopen to refresh — there is no way to mirror live panes without moving them.
+`prefix o` reads window metadata at launch (`list-sessions` + per-session `list-windows`), truncates all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in synchronously. `r` (or reopen) refreshes after out-of-band changes — there is no way to mirror live panes without moving them.
 
 Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding is trimmed inside the trunc helper (no `sed` stage).
 

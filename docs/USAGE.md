@@ -13,6 +13,9 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 | `0`-`9` | jump to window with that index in this session (no match = ignore) |
 | `Enter` | jump to window (on the session bar: attach to session) |
 | `q` / `Esc` | cancel |
+| `c` | new window in the viewed session (cursor lands on it, grid stays open) |
+| `X` / `Del` | kill selected window (grid only, never the session bar) |
+| `r` | refresh snapshots |
 | down from bottom row | scroll |
 
 Cursor starts on the current window. `●` selected / `○` unselected; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock).

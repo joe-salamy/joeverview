@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Arrow-navigated 2x2 snapshot grid for tmux windows across sessions. Bound to `prefix o`.
-# Snapshots are static (reopen to refresh). Arrows/WASD move, Up from the
+# Snapshots are static (r refreshes, reopen also works). Arrows/WASD move, Up from the
 # top row focuses the session switcher (Left/Right pages sessions, Down back),
 # 0-9 jumps to the window with that index in this session, Enter jumps to the
-# cell (or attaches to the focused session), q/Esc cancels. Each cell shows its
+# cell (or attaches to the focused session), q/Esc cancels, c opens a new window
+# in the viewed session, X/Del kills the selected window. Each cell shows its
 # title line with a ⧉ N badge when the window holds N tmux panes, then the
 # BOTTOM-LEFT of the active pane capture (last non-blank lines, truncated to
 # cell width at full resolution — cut off, never scaled). Down from the bottom
@@ -86,31 +87,93 @@ mid_y=$((band_h + 3))
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES SESS_MED
-nsess=0; i=0
-while IFS=$'\t' read -r sid sname; do
-  SESS_IDS[$nsess]=$sid
-  SESS_NAMES[$nsess]=$sname
-  SESS_START[$nsess]=$i
-  c=0
-  while IFS=$'\t' read -r wid widx wname wtitle wpath panes alert; do
-    IDS[$i]=$wid
-    WIDX[$i]=$widx
-    ALERTS[$i]=$alert
-    WIN_SESS[$i]=$sid
-    suffix=""
-    if ((panes > 1)); then suffix=" ⧉ $panes"; fi
-    RAW_TITLES[$i]="[$widx] $wname │ $wtitle │ $wpath$suffix"
-    i=$((i + 1)); c=$((c + 1))
-  done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
-  SESS_COUNT[$nsess]=$c
-  nsess=$((nsess + 1))
-done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
-n=$i
-[ "$n" -eq 0 ] && { rm -rf "$TMP"; exit 0; }
-# Titles truncate in one python pass; snapshots fault in per visible page.
-mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
-prof "meta n=$n nsess=$nsess"
-
+# Rebuild session/window metadata from tmux. Snapshot files ($TMP/$idx) and
+# SNAP_* vars are keyed by global index, so positions shift on create/kill:
+# both are dropped here and faulted back in by ensure_visible(). Also drops
+# the session-medallion cache. Returns 1 when no windows remain.
+load_data() {
+  local sid sname wid widx wname wtitle wpath panes alert suffix c old_n
+  old_n=${n:-0}
+  SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
+  IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=(); SESS_MED=()
+  rm -f "$TMP"/* 2>/dev/null || true
+  for ((c = 0; c < old_n + 4; c++)); do unset "SNAP_$c" 2>/dev/null || true; done
+  nsess=0; i=0
+  while IFS=$'\t' read -r sid sname; do
+    SESS_IDS[$nsess]=$sid
+    SESS_NAMES[$nsess]=$sname
+    SESS_START[$nsess]=$i
+    c=0
+    while IFS=$'\t' read -r wid widx wname wtitle wpath panes alert; do
+      IDS[$i]=$wid
+      WIDX[$i]=$widx
+      ALERTS[$i]=$alert
+      WIN_SESS[$i]=$sid
+      suffix=""
+      if ((panes > 1)); then suffix=" ⧉ $panes"; fi
+      RAW_TITLES[$i]="[$widx] $wname │ $wtitle │ $wpath$suffix"
+      i=$((i + 1)); c=$((c + 1))
+    done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+    SESS_COUNT[$nsess]=$c
+    nsess=$((nsess + 1))
+  done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
+  n=$i
+  [ "$n" -eq 0 ] && return 1
+  # Titles truncate in one python pass; snapshots fault in per visible page.
+  mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
+  prof "meta n=$n nsess=$nsess"
+}
+# Clamp top so sel sits on the visible page.
+place_top() {
+  local rstart cnt max_top
+  rstart=$(( sel - (sel - s0) % COLS ))
+  cnt=$((send - s0))
+  if (( cnt >= 3 )); then
+    max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
+    if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
+  else
+    top=$rstart
+  fi
+}
+# Re-read metadata and reseat sess/sel/top by stable ID (want_wid="" clamps
+# into the session). keep_bar preserves session-bar focus for r. Full draw;
+# exits quietly when nothing remains (e.g. last window killed).
+refresh_to() {
+  local want_sid=${1:-} want_wid=${2:-} keep_bar=${3:-0} k
+  load_data || exit 0
+  sess=0
+  if [[ -n $want_sid ]]; then
+    for ((k = 0; k < nsess; k++)); do
+      if [[ ${SESS_IDS[$k]} == "$want_sid" ]]; then sess=$k; break; fi
+    done
+  fi
+  s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
+  sel=$s0
+  if [[ -n $want_wid ]]; then
+    for ((k = s0; k < send; k++)); do
+      if [[ ${IDS[$k]} == "$want_wid" ]]; then sel=$k; break; fi
+    done
+  fi
+  (( sel < s0 )) && sel=$s0
+  (( sel >= send )) && sel=$((send - 1))
+  bar=$keep_bar
+  place_top
+  draw
+}
+# New window in the viewed session; cursor lands on it.
+do_new_window() {
+  local target newid
+  target=${SESS_IDS[$sess]}
+  newid=$(tmux new-window -t "$target" -F "#{window_id}" 2>/dev/null) || return 0
+  refresh_to "$target" "$newid" 0
+}
+# Kill the selected window (grid focus only); clamps into the session.
+do_kill_window() {
+  (( bar )) && return 0
+  tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
+  refresh_to "${SESS_IDS[$sess]}" "" 0
+}
+load_data || { rm -rf "$TMP"; exit 0; }
 # Start on the current window, not always cell 0.
 sel=0
 sess=0
@@ -121,14 +184,7 @@ for ((k = 0; k < nsess; k++)); do
   if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
 done
 s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
-rstart=$(( sel - (sel - s0) % COLS ))
-cnt=$((send - s0))
-if (( cnt >= 3 )); then
-  max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
-  if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
-else
-  top=$rstart
-fi
+place_top
 # On-demand snapshots: only the visible page holds captures; a present
 # $TMP/$idx file is the loaded flag. draw() ensures its page, so scrolls
 # and session switches fault missing cells in synchronously.
@@ -207,9 +263,9 @@ sess_label() {
 footext() {
   local rel=$((top - s0)) cnt=$((send - s0)) hi lo
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
-  if ((bar)); then printf '←/→ switch session · ↓ back · Enter attach · q cancel · session %d/%d' "$((sess + 1))" "$nsess"
-  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"
-  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  if ((bar)); then printf '←/→ switch session · ↓ back · Enter attach · q cancel · c new · r refresh · session %d/%d' "$((sess + 1))" "$nsess"
+  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · c new · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"
+  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · c new · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -422,6 +478,16 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [dD] ]]; then
     if ((bar)); then switch_sess 1; continue
     else ((sel + 1 < send)) && sel=$((sel + 1)); fi
+  elif [[ $k == [cC] ]]; then
+    do_new_window; continue
+  elif [[ $k == X || $k == $'\x7f' ]]; then
+    # Capital-only kill (plus Del alias): lowercase x stays ignored as a
+    # fat-finger guard beside WASD. Disabled on the session bar.
+    do_kill_window; continue
+  elif [[ $k == [rR] ]]; then
+    if ((bar)); then refresh_to "${SESS_IDS[$sess]}" "" 1
+    else refresh_to "${SESS_IDS[$sess]}" "${IDS[$sel]}" 0; fi
+    continue
   else
     continue
   fi
