@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# Arrow-navigated 2x2 snapshot grid for tmux windows. Bound to `prefix o`.
+# Static captures at launch (reopen to refresh). No typing: arrows move,
+# Enter jumps, q/Esc cancels. Each cell shows its title line, then the
+# BOTTOM-LEFT of the capture (tail lines, truncated to cell width at full
+# resolution — cut off, never scaled). Down from the bottom row scrolls.
+set -u
+COLS=2; VROWS=2
+
+command -v python3 >/dev/null 2>&1 || { echo "tmux-window-grid needs python3" >&2; exit 1; }
+
+# Visible-width-aware truncation: keeps SGR colors atomic, strips OSC
+# hyperlinks, never splits UTF-8 (system `cut -c` counts bytes). Program goes
+# via -c so the data stream keeps stdin (a heredoc would swallow the pipe).
+PY="import re, sys, unicodedata
+w = int(sys.argv[1])
+osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
+sgr = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+def vw(ch):
+    e = unicodedata.east_asian_width(ch)
+    if e in ('W', 'F'):
+        return 2
+    if unicodedata.combining(ch):
+        return 0
+    return 1
+chunks = []
+for raw in sys.stdin:
+    line = osc.sub('', raw.rstrip('\n'))
+    out = []
+    v = 0
+    saw = False
+    done = False
+    for tok in re.split(r'(\x1b\[[0-9;]*[A-Za-z])', line):
+        if done or not tok:
+            continue
+        if sgr.fullmatch(tok):
+            out.append(tok)
+            saw = True
+            continue
+        for ch in tok:
+            c = vw(ch)
+            if v + c > w:
+                done = True
+                break
+            out.append(ch)
+            v += c
+    if saw:
+        out.append('\x1b[0m')
+    chunks.append(''.join(out))
+sys.stdout.write('\n'.join(chunks) + ('\n' if chunks else ''))"
+trunc() { python3 -c "$PY" "$1"; }
+
+H=$(tmux display-message -p '#{pane_height}'); W=$(tmux display-message -p '#{pane_width}')
+cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
+title_w=$((cell_w - 2))
+band_h=$(((H - 9) / VROWS)); ((band_h < 4)) && band_h=4
+snap_h=$((band_h - 1))
+vx=$((2 + cell_w + 1))
+bot_y=$((H - 2))
+mid_y=$((band_h + 3))
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmux-grid.XXXXXX") || exit 1
+declare -a IDS TITLES ALERTS
+i=0
+while IFS=$'\t' read -r wid widx wname wtitle wpath alert; do
+  IDS[$i]=$wid
+  ALERTS[$i]=$alert
+  TITLES[$i]=$(printf '[%s] %s │ %s │ %s' "$widx" "$wname" "$wtitle" "$wpath" | trunc "$title_w")
+  tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | tail -n "$snap_h" | trunc "$cell_w" > "$TMP/$i"
+  # shellcheck disable=SC2178
+  mapfile -t "SNAP_$i" < "$TMP/$i"
+  i=$((i + 1))
+done < <(tmux list-windows -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+n=$i
+[ "$n" -eq 0 ] && { rm -rf "$TMP"; exit 0; }
+
+# Start on the current window, not always cell 0.
+sel=0
+cur=$(tmux display-message -p '#{window_id}')
+for ((k = 0; k < n; k++)); do
+  if [[ ${IDS[$k]} == "$cur" ]]; then sel=$k; break; fi
+done
+row=$((sel - sel % COLS))
+if (( n >= 3 )); then
+  max_top=$(( (n - 3) / COLS * COLS ))
+  if (( row < max_top )); then top=$row; else top=$max_top; fi
+else
+  top=$row
+fi
+
+saved_stty=$(stty -g 2>/dev/null || true)
+cleanup() { printf '\x1b[?25h'; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; rm -rf "$TMP"; }
+trap cleanup EXIT
+printf '\x1b[?25l\x1b[2J'
+stty -echo -icanon min 1 time 0 2>/dev/null
+
+at() { printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
+
+put() { printf -v __put '\x1b[%d;%dH\x1b[K%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$__put; }
+nput() { printf -v __nput '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$__nput; }
+# Alert style: bell=bold red, activity=bold yellow (bell wins if both).
+# Selected cells fold reverse into the same SGR so no inner reset kills it.
+title_cell() {
+  local idx=$1 selected=$2 bullet text
+  if ((selected)); then bullet='● '; else bullet='○ '; fi
+  text="${bullet}${TITLES[$idx]}"
+  case "${ALERTS[$idx]}" in
+    *B*) if ((selected)); then printf '\x1b[7;1;31m%s\x1b[0m' "$text"; else printf '\x1b[1;31m%s\x1b[0m' "$text"; fi ;;
+    *A*) if ((selected)); then printf '\x1b[7;1;33m%s\x1b[0m' "$text"; else printf '\x1b[1;33m%s\x1b[0m' "$text"; fi ;;
+    *) if ((selected)); then printf '\x1b[7m%s\x1b[0m' "$text"; else printf '%s' "$text"; fi ;;
+  esac
+}
+# Repaint one visible title row (both cells + gutter + borders) without
+# wiping the sibling: clear once at row start, then write with no-EL moves.
+paint_row() {
+  local r=$1 roff base idx c coff
+  if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
+  base=$((top + r * COLS))
+  at "$roff" 0
+  printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
+  for ((c = 0; c < COLS; c++)); do
+    idx=$((base + c))
+    if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
+    if ((idx < n)); then
+      if ((idx == sel)); then printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 1)"
+      else printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 0)"; fi
+    fi
+  done
+  printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
+  printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
+}
+footext() { hi=$((top + 1)); lo=$((top + COLS * VROWS)); ((lo > n)) && lo=$n; printf '↑↓←→/WASD move · Enter jump · q cancel · %d-%d/%d' "$hi" "$lo" "$n"; }
+draw() {
+  FRAME=$'\x1b[?25l'
+  seg='╭'
+  for ((x = 1; x <= W - 2; x++)); do
+    if ((x == vx)); then seg+='┬'; else seg+='─'; fi
+  done
+  put 0 0 "$seg╮"
+  nput 0 2 ' Windows '
+  for ((y = 1; y <= bot_y - 1; y++)); do
+    nput "$y" 0 '│'
+    nput "$y" $((W - 1)) '│'
+  done
+  seg='╰'
+  for ((x = 1; x <= W - 2; x++)); do
+    if ((x == vx)); then seg+='┴'; else seg+='─'; fi
+  done
+  put "$bot_y" 0 "$seg╯"
+  for ((y = 1; y <= bot_y - 1; y++)); do
+    ((y == mid_y)) && continue
+    nput "$y" "$vx" '│'
+  done
+  seg='├'
+  for ((x = 1; x <= W - 2; x++)); do
+    if ((x == vx)); then seg+='┼'; else seg+='─'; fi
+  done
+  seg+='┤'
+  put "$mid_y" 0 "$seg"
+  for ((r = 0; r < VROWS; r++)); do
+    if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
+    for ((c = 0; c < COLS; c++)); do
+      idx=$((top + r * COLS + c))
+      if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
+      if ((idx < n)); then
+        if ((idx == sel)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
+        else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
+        declare -n ref="SNAP_$idx"
+        for ((l = 0; l < snap_h; l++)); do
+          put $((roff + 1 + l)) "$coff" "${ref[$l]:-}"
+        done
+      else
+        for ((l = 0; l < band_h; l++)); do
+          put $((roff + l)) "$coff" "$(printf '%*s' "$cell_w" '')"
+        done
+      fi
+    done
+  done
+  # Cell puts use EL (clear-to-EOL), wiping the middle gutter + right border
+  # on touched rows. Restore them with no-EL writes after the cells.
+  for ((r = 0; r < VROWS; r++)); do
+    if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
+    for ((l = 0; l < band_h; l++)); do
+      y=$((roff + l))
+      nput "$y" 0 '│'
+      nput "$y" "$vx" '│'
+      nput "$y" $((W - 1)) '│'
+    done
+  done
+  put $((H - 1)) 0 "$(footext)"
+  printf '%s' "$FRAME"
+}
+
+draw
+while IFS= read -rsn1 k; do
+  prev=$sel
+  if [[ $k == $'\x1b' ]]; then
+    IFS= read -rsn1 -t 0.1 b || break
+    [[ $b == '[' ]] || continue
+    IFS= read -rsn1 -t 0.1 d || continue
+    case $d in
+      A) ((sel >= COLS)) && sel=$((sel - COLS)) ;;
+      B) ((sel + COLS < n)) && sel=$((sel + COLS)) ;;
+      C) ((sel + 1 < n)) && sel=$((sel + 1)) ;;
+      D) ((sel > 0)) && sel=$((sel - 1)) ;;
+    esac
+  elif [[ -z $k || $k == $'\n' ]]; then
+    tmux select-window -t "${IDS[$sel]}"
+    exit 0
+  elif [[ $k == [qQ] ]]; then
+    break
+  elif [[ $k == [wW] ]]; then
+    ((sel >= COLS)) && sel=$((sel - COLS))
+  elif [[ $k == [sS] ]]; then
+    ((sel + COLS < n)) && sel=$((sel + COLS))
+  elif [[ $k == [aA] ]]; then
+    ((sel > 0)) && sel=$((sel - 1))
+  elif [[ $k == [dD] ]]; then
+    ((sel + 1 < n)) && sel=$((sel + 1))
+  fi
+  if ((prev == sel)); then continue; fi
+  if ((sel >= top && sel <= top + COLS * VROWS - 1)); then
+    # Repaint whole title rows: per-cell EL wipes the sibling, so clear
+    # once per row and rewrite both cells + gutter + borders.
+    if (((prev - top) / COLS == (sel - top) / COLS)); then
+      paint_row $(((sel - top) / COLS))
+    else
+      paint_row $(((prev - top) / COLS))
+      paint_row $(((sel - top) / COLS))
+    fi
+    at $((H - 1)) 0; footext
+  else
+    while ((sel < top)); do top=$((top - COLS)); done
+    while ((sel > top + COLS * VROWS - 1)); do top=$((top + COLS)); done
+    draw
+  fi
+done
+exit 0

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fuzzy search pane scrollback contents across all windows, jump to the match.
+# Bound to `prefix /` via display-popup. Enter=jumps to the pane holding the line.
+# Searches names AND contents (prefix w searches names only).
+# Rows are keyed by stable #{pane_id} (%id): bare `W.P` targets can collide
+# with session names, so every -t uses the %id before the first colon.
+set -u
+LINES=500
+PANES=$(tmux list-panes -s -F '#{pane_id}')
+MATCH=$(for p in $PANES; do
+  tmux capture-pane -p -S -$LINES -t "$p" 2>/dev/null | grep -v '^[[:space:]]*$' | sed "s|^|$p:|"
+done | fzf --ansi --reverse --border --height=100% \
+  --delimiter=: \
+  --prompt='grep> ' \
+  --header="enter=jump-to-pane  (fuzzy over last $LINES lines per pane)" \
+  --preview="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//'" \
+  --preview-window='right:60%:nowrap') || exit 0
+[ -z "${MATCH:-}" ] && exit 0
+TARGET_ID=$(printf '%s' "$MATCH" | cut -d: -f1)
+[ -z "$TARGET_ID" ] && exit 0
+tmux select-pane -t "$TARGET_ID"
