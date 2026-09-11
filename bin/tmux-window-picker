@@ -214,9 +214,8 @@ nput() { printf -v __nput '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAM
 # Alert style: bell=bold red, activity=bold yellow (bell wins if both).
 # Selected cells fold reverse into the same SGR so no inner reset kills it.
 title_cell() {
-  local idx=$1 selected=$2 bullet text
-  if ((selected)); then bullet='● '; else bullet='○ '; fi
-  text="${bullet}${TITLES[$idx]}"
+  local idx=$1 selected=$2 text
+  text="${TITLES[$idx]}"
   case "${ALERTS[$idx]}" in
     *B*) if ((selected)); then printf '\x1b[7;1;31m%s\x1b[0m' "$text"; else printf '\x1b[1;31m%s\x1b[0m' "$text"; fi ;;
     *A*) if ((selected)); then printf '\x1b[7;1;33m%s\x1b[0m' "$text"; else printf '\x1b[1;33m%s\x1b[0m' "$text"; fi ;;

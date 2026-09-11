@@ -18,7 +18,7 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 | `r` | refresh snapshots |
 | down from bottom row | scroll |
 
-Cursor starts on the current window. `●` selected / `○` unselected; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock).
+Cursor starts on the current window. Selected cell is reverse-highlighted; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock).
 
 ## `prefix O` — pane jumper
 
