@@ -318,11 +318,11 @@ draw() {
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      (( top < send )) && nput "$y" 0 '│'
-      (( top + 1 < send )) && nput "$y" $((W - 1)) '│'
+      if (( top < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+      if (( top + 1 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
     else
-      (( top + 2 < send )) && nput "$y" 0 '│'
-      (( top + 3 < send )) && nput "$y" $((W - 1)) '│'
+      if (( top + 2 < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+      if (( top + 3 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
     fi
   done
   if (( b2 )); then seg='╰'; else seg=' '; fi
@@ -345,9 +345,9 @@ draw() {
     if ((y < mid_y)); then
       # Notch the divider where it passes under the session medallion,
       # so the column border never touches the session name.
-      if (( top < send || top + 1 < send )) && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; fi
+      if (( top < send || top + 1 < send )) && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
     else
-      (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
+      if (( top + 2 < send || top + 3 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
     fi
   done
   if (( b0 && b2 )); then seg='├'
@@ -408,13 +408,13 @@ draw() {
     for ((l = 0; l < band_h; l++)); do
       y=$((roff + l))
       if ((r == 0)); then
-        (( top < send )) && nput "$y" 0 '│'
-        (( top < send || top + 1 < send )) && nput "$y" "$vx" '│'
-        (( top + 1 < send )) && nput "$y" $((W - 1)) '│'
+        if (( top < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+        if (( top < send || top + 1 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+        if (( top + 1 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
       else
-        (( top + 2 < send )) && nput "$y" 0 '│'
-        (( top + 2 < send || top + 3 < send )) && nput "$y" "$vx" '│'
-        (( top + 3 < send )) && nput "$y" $((W - 1)) '│'
+        if (( top + 2 < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+        if (( top + 2 < send || top + 3 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+        if (( top + 3 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
       fi
     done
   done
