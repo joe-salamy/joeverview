@@ -191,6 +191,17 @@ draw() {
   printf '%s' "$FRAME"
 }
 
+move_down() {
+  local next=$((sel + COLS))
+  if ((next < n)); then sel=$next; return; fi
+  local last_start=$(((n - 1) / COLS * COLS))
+  if ((sel < last_start)); then
+    local t=$((last_start + sel % COLS))
+    ((t >= n)) && t=$((n - 1))
+    sel=$t
+  fi
+}
+
 draw
 while IFS= read -rsn1 k; do
   prev=$sel
@@ -200,7 +211,7 @@ while IFS= read -rsn1 k; do
     IFS= read -rsn1 -t 0.1 d || continue
     case $d in
       A) ((sel >= COLS)) && sel=$((sel - COLS)) ;;
-      B) ((sel + COLS < n)) && sel=$((sel + COLS)) ;;
+      B) move_down ;;
       C) ((sel + 1 < n)) && sel=$((sel + 1)) ;;
       D) ((sel > 0)) && sel=$((sel - 1)) ;;
     esac
@@ -212,7 +223,7 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [wW] ]]; then
     ((sel >= COLS)) && sel=$((sel - COLS))
   elif [[ $k == [sS] ]]; then
-    ((sel + COLS < n)) && sel=$((sel + COLS))
+    move_down
   elif [[ $k == [aA] ]]; then
     ((sel > 0)) && sel=$((sel - 1))
   elif [[ $k == [dD] ]]; then
