@@ -208,15 +208,21 @@ do_new_session() {
   refresh_to "$newsid" "" 1
 }
 # Kill the viewed session (bar focus only, never the last one — killing
-# the sole session would strand the client); lands on the neighbour
-# session, clamped at the end.
+# the sole session would strand the client); lands on the session now at
+# the same position (neighbour slides in, clamped at the end) with bar
+# focus, keeping the window offset like kill-window. Pre-switches the
+# client when killing the attached session so the popup survives.
 do_kill_session() {
-  local target=${SESS_IDS[$sess]} fallback=""
+  local target=${SESS_IDS[$sess]} fallback="" attached="" off=$((sel - s0))
   (( nsess > 1 )) || return 0
   if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
   else fallback=${SESS_IDS[$((sess - 1))]}; fi
+  attached=$(tmux display-message -p '#{session_id}' 2>/dev/null) || attached=""
+  if [[ -n $attached && $target == "$attached" ]]; then
+    tmux switch-client -t "$fallback" 2>/dev/null || return 0
+  fi
   tmux kill-session -t "$target" 2>/dev/null || return 0
-  refresh_to "$fallback" "" 1
+  refresh_to "$fallback" "" 1 "$off"
 }
 # Swap the selected window with its neighbour within the viewed session;
 # cursor follows the moved window by stable ID. Grid focus only.
@@ -280,16 +286,17 @@ do_rename_window() {
   refresh_to "$sid" "$wid" 0
 }
 # Rename the viewed session (bar focus only); drops the cached medallion
-# so the new name stamps fresh. Empty input keeps the old name.
+# so the new name stamps fresh, keeping the window offset behind the bar.
+# Empty input keeps the old name.
 do_rename_session() {
   (( bar )) || return 0
-  local sid=${SESS_IDS[$sess]} old
+  local sid=${SESS_IDS[$sess]} old off=$((sel - s0))
   old=${SESS_NAMES[$sess]}
   read_name "session" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
   tmux rename-session -t "$sid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
   unset "SESS_MED[$sid]" "SESS_MEDW[$sid]" 2>/dev/null || true
-  refresh_to "$sid" "" 1
+  refresh_to "$sid" "" 1 "$off"
 }
 load_data || { rm -rf "$TMP"; exit 0; }
 # Start on the current window, not always cell 0.
