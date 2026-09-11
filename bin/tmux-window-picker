@@ -2,8 +2,8 @@
 # Arrow-navigated 2x2 snapshot grid for tmux windows. Bound to `prefix o`.
 # Static captures at launch (reopen to refresh). No typing: arrows move,
 # Enter jumps, q/Esc cancels. Each cell shows its title line, then the
-# BOTTOM-LEFT of the capture (tail lines, truncated to cell width at full
-# resolution — cut off, never scaled). Down from the bottom row scrolls.
+# BOTTOM-LEFT of the capture (last non-blank lines, truncated to cell width
+# at full resolution — cut off, never scaled). Down from the bottom row scrolls.
 set -u
 COLS=2; VROWS=2
 
@@ -12,8 +12,12 @@ command -v python3 >/dev/null 2>&1 || { echo "tmux-window-grid needs python3" >&
 # Visible-width-aware truncation: keeps SGR colors atomic, strips OSC
 # hyperlinks, never splits UTF-8 (system `cut -c` counts bytes). Program goes
 # via -c so the data stream keeps stdin (a heredoc would swallow the pipe).
+# Optional second arg keeps only the last N non-blank (has a visible
+# non-space char) lines, so top-anchored TUIs stay identifiable instead of
+# showing blank tail. SGR-colored padding still counts as blank.
 PY="import re, sys, unicodedata
 w = int(sys.argv[1])
+keep = int(sys.argv[2]) if len(sys.argv) > 2 else None
 osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
 sgr = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 def vw(ch):
@@ -23,11 +27,12 @@ def vw(ch):
     if unicodedata.combining(ch):
         return 0
     return 1
-chunks = []
+rows = []
 for raw in sys.stdin:
     line = osc.sub('', raw.rstrip('\n'))
     out = []
     v = 0
+    content = False
     saw = False
     done = False
     for tok in re.split(r'(\x1b\[[0-9;]*[A-Za-z])', line):
@@ -44,11 +49,17 @@ for raw in sys.stdin:
                 break
             out.append(ch)
             v += c
+            if not ch.isspace():
+                content = True
     if saw:
         out.append('\x1b[0m')
-    chunks.append(''.join(out))
-sys.stdout.write('\n'.join(chunks) + ('\n' if chunks else ''))"
-trunc() { python3 -c "$PY" "$1"; }
+    rows.append((content, ''.join(out)))
+if keep is not None:
+    texts = [t for c, t in rows if c][-keep:] if keep > 0 else []
+else:
+    texts = [t for _, t in rows]
+sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
+trunc() { python3 -c "$PY" "$@"; }
 
 H=$(tmux display-message -p '#{pane_height}'); W=$(tmux display-message -p '#{pane_width}')
 cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
@@ -66,7 +77,7 @@ while IFS=$'\t' read -r wid widx wname wtitle wpath alert; do
   IDS[$i]=$wid
   ALERTS[$i]=$alert
   TITLES[$i]=$(printf '[%s] %s │ %s │ %s' "$widx" "$wname" "$wtitle" "$wpath" | trunc "$title_w")
-  tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | tail -n "$snap_h" | trunc "$cell_w" > "$TMP/$i"
+  tmux capture-pane -pe -t "$wid" 2>/dev/null | sed -e 's/[[:space:]]*$//' | trunc "$cell_w" "$snap_h" > "$TMP/$i"
   # shellcheck disable=SC2178
   mapfile -t "SNAP_$i" < "$TMP/$i"
   i=$((i + 1))
