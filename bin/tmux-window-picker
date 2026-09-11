@@ -207,17 +207,16 @@ do_new_session() {
   newsid=$(tmux new-session -d -P -F "#{session_id}" 2>/dev/null) || return 0
   refresh_to "$newsid" "" 1
 }
-# Kill the viewed session (bar focus only); lands on the neighbour session,
-# clamped at the end. Exits quietly when nothing remains.
+# Kill the viewed session (bar focus only, never the last one — killing
+# the sole session would strand the client); lands on the neighbour
+# session, clamped at the end.
 do_kill_session() {
   local target=${SESS_IDS[$sess]} fallback=""
-  if (( nsess > 1 )); then
-    if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
-    else fallback=${SESS_IDS[$((sess - 1))]}; fi
-  fi
+  (( nsess > 1 )) || return 0
+  if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
+  else fallback=${SESS_IDS[$((sess - 1))]}; fi
   tmux kill-session -t "$target" 2>/dev/null || return 0
-  if [[ -n $fallback ]]; then refresh_to "$fallback" "" 1
-  else refresh_to "" "" 1; fi
+  refresh_to "$fallback" "" 1
 }
 # Swap the selected window with its neighbour within the viewed session;
 # cursor follows the moved window by stable ID. Grid focus only.
@@ -234,6 +233,43 @@ do_move_window() {
   fi
   tmux swap-window -s "$wid" -t "$target" 2>/dev/null || return 0
   refresh_to "${SESS_IDS[$sess]}" "$wid" 0
+}
+# Cooked-line rename prompt on the footer row: leaves raw nav mode, shows
+# the cursor, reads one line, restores raw mode. Sets READ_NAME ("" = keep).
+# Called directly (never in $()) so the prompt reaches the popup tty.
+read_name() {
+  local kind=$1 old=$2
+  READ_NAME=""
+  at $((H - 1)) 0
+  printf '\x1b[?25h'
+  stty echo icanon 2>/dev/null || true
+  printf 'rename %s [%s]: ' "$kind" "$old"
+  IFS= read -r READ_NAME 2>/dev/null || READ_NAME=""
+  stty -echo -icanon min 1 time 0 2>/dev/null || true
+  printf '\x1b[?25l'
+}
+# Rename the selected window (grid focus only); snapshots are keyed by
+# stable ID so the capture survives, titles rebuild in refresh_to.
+do_rename_window() {
+  (( bar )) && return 0
+  local wid=${IDS[$sel]} sid=${SESS_IDS[$sess]} old
+  old=$(tmux display-message -p -t "$wid" '#{window_name}' 2>/dev/null) || old=""
+  read_name "window" "$old"
+  [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
+  tmux rename-window -t "$wid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
+  refresh_to "$sid" "$wid" 0
+}
+# Rename the viewed session (bar focus only); drops the cached medallion
+# so the new name stamps fresh. Empty input keeps the old name.
+do_rename_session() {
+  (( bar )) || return 0
+  local sid=${SESS_IDS[$sess]} old
+  old=${SESS_NAMES[$sess]}
+  read_name "session" "$old"
+  [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
+  tmux rename-session -t "$sid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
+  unset "SESS_MED[$sid]" "SESS_MEDW[$sid]" 2>/dev/null || true
+  refresh_to "$sid" "" 1
 }
 load_data || { rm -rf "$TMP"; exit 0; }
 # Start on the current window, not always cell 0.
@@ -325,12 +361,16 @@ sess_label() {
     printf '  %s  ' "$nm"
   fi
 }
+# Footer is the contract: every working key for the current focus is listed,
+# nothing unlisted works. Grid rows show window ops only (c = window,
+# X = window); the bar shows session ops only (N = session, X = session).
 footext() {
   local rel=$((top - s0)) cnt=$((send - s0)) hi lo
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
-  if ((bar)); then printf '←/→ switch · ↓ back · Enter attach · N new · X kill-sess · r refresh · session %d/%d' "$((sess + 1))" "$nsess"
-  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · c new · N sess · ,/. move · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"
-  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · c new · N sess · ,/. move · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  if ((bar)); then
+    if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X/Del kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
+    else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
+  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · c new-window · R rename · ,/.<> move · X/Del kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -506,7 +546,7 @@ while IFS= read -rsn1 k; do
       [0-9]) while [[ $d != [A-Za-z~] ]]; do IFS= read -rsn1 -t 0.05 d || break; done; continue ;;
       A) if ((bar)); then continue
          elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-         elif ((nsess > 1)); then bar=1; draw; continue; fi ;;
+         else bar=1; draw; continue; fi ;;
       B) if ((bar)); then bar=0; draw; continue
          else move_down; fi ;;
       C) if ((bar)); then switch_sess 1; continue
@@ -530,7 +570,7 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [wW] ]]; then
     if ((bar)); then continue
     elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-    elif ((nsess > 1)); then bar=1; draw; continue; fi
+    else bar=1; draw; continue; fi
   elif [[ $k == [sS] ]]; then
     if ((bar)); then bar=0; draw; continue
     else move_down; fi
@@ -544,6 +584,8 @@ while IFS= read -rsn1 k; do
     (( bar )) && continue
     do_new_window; continue
   elif [[ $k == [nN] ]]; then
+    # Session creation lives on the session bar (strict two-mode).
+    (( bar )) || continue
     do_new_session; continue
   elif [[ $k == "," || $k == "<" ]]; then
     do_move_window -1; continue
@@ -554,14 +596,18 @@ while IFS= read -rsn1 k; do
     # fat-finger guard beside WASD. Grid focus kills the window, bar focus
     # kills the viewed session.
     if (( bar )); then do_kill_session; else do_kill_window; fi; continue
-  elif [[ $k == [rR] ]]; then
+  elif [[ $k == r ]]; then
     # Explicit refresh: drop all cached captures/medallions so pane content
     # and renamed sessions fault in fresh (c/X reuse the cache on purpose).
+    # Lowercase only: R is rename (visible in both footers).
     SNAP=(); SESS_MED=(); SESS_MEDW=()
     rm -f "$TMP"/* 2>/dev/null || true
     if ((bar)); then refresh_to "${SESS_IDS[$sess]}" "" 1
     else refresh_to "${SESS_IDS[$sess]}" "${IDS[$sel]}" 0; fi
     continue
+  elif [[ $k == R ]]; then
+    # Rename: window on grid focus, session on bar focus. Empty keeps old.
+    if (( bar )); then do_rename_session; else do_rename_window; fi; continue
   else
     continue
   fi

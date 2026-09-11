@@ -49,7 +49,7 @@ case "$cmd" in
     else printf 'cap-%s-line1\ncap-%s-line2\n' "$id" "$id"
     fi
     ;;
-  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane)
+  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane|rename-window|rename-session)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
     if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
@@ -106,18 +106,40 @@ grep -qF '[5] win5' "$T/out-e" || fail "page-follow content"
 run_picker n2 '.q' "$T/out-f" "$T/calls-f"
 grep -qF 'swap-window -s @w0 -t @w1' "$T/calls-f" || fail "move-right log"
 
-# (g) n2 fed n creates a session
+# (g) multi fed Up+n creates a session from the bar (grid n is ignored)
 : > "$T/calls-g"
-run_picker n2 'nq' "$T/out-g" "$T/calls-g"
+run_picker multi '\x1b[Anq' "$T/out-g" "$T/calls-g"
 grep -qF 'new-session' "$T/calls-g" || fail "new-session log"
+: > "$T/calls-g2"
+run_picker n2 'nq' "$T/out-g2" "$T/calls-g2"
+grep -qF 'new-session' "$T/calls-g2" && fail "grid-n creates session"
 
 # (h) multi fed Up+X kills the viewed session from the bar
 : > "$T/calls-h"
 run_picker multi '\x1b[AXq' "$T/out-h" "$T/calls-h"
 grep -qF 'kill-session -t $s0' "$T/calls-h" || fail "kill-session log"
 
+# (i) n1 (single session) fed Up focuses the bar anyway
+run_picker n1 '\x1b[Aq' "$T/out-i"
+grep -qF 'session 1/1' "$T/out-i" || fail "single-session bar focus"
+
+# (j) n1 fed Up+X must NOT kill the sole session
+: > "$T/calls-j"
+run_picker n1 '\x1b[AXq' "$T/out-j" "$T/calls-j"
+grep -qF 'kill-session' "$T/calls-j" && fail "sole-session killed"
+
+# (k) n2 fed Rname+Enter renames the selected window
+: > "$T/calls-k"
+run_picker n2 'Rwin-new\nq' "$T/out-k" "$T/calls-k"
+grep -qF 'rename-window -t @w0 win-new' "$T/calls-k" || fail "rename-window log"
+
+# (l) multi fed Up+Rname+Enter renames the viewed session
+: > "$T/calls-l"
+run_picker multi '\x1b[ARsess-new\nq' "$T/out-l" "$T/calls-l"
+grep -qF 'rename-session -t $s0 sess-new' "$T/calls-l" || fail "rename-session log"
+
 # (b) again over scenario outputs
-for f in "$T"/out-c "$T"/out-d "$T"/out-e "$T"/out-f "$T"/out-g "$T"/out-h; do
+for f in "$T"/out-*; do
   grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
 done
 
