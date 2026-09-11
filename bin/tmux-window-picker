@@ -200,6 +200,41 @@ do_kill_window() {
   tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
   refresh_to "$target" "" 0 "$off"
 }
+# New detached session; grid lands on it with bar focus so the user can
+# keep paging or dive in (Down, then c for windows). Full refresh.
+do_new_session() {
+  local newsid
+  newsid=$(tmux new-session -d -P -F "#{session_id}" 2>/dev/null) || return 0
+  refresh_to "$newsid" "" 1
+}
+# Kill the viewed session (bar focus only); lands on the neighbour session,
+# clamped at the end. Exits quietly when nothing remains.
+do_kill_session() {
+  local target=${SESS_IDS[$sess]} fallback=""
+  if (( nsess > 1 )); then
+    if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
+    else fallback=${SESS_IDS[$((sess - 1))]}; fi
+  fi
+  tmux kill-session -t "$target" 2>/dev/null || return 0
+  if [[ -n $fallback ]]; then refresh_to "$fallback" "" 1
+  else refresh_to "" "" 1; fi
+}
+# Swap the selected window with its neighbour within the viewed session;
+# cursor follows the moved window by stable ID. Grid focus only.
+do_move_window() {
+  local dir=$1 wid target
+  (( bar )) && return 0
+  wid=${IDS[$sel]}
+  if (( dir < 0 )); then
+    (( sel <= s0 )) && return 0
+    target=${IDS[$((sel - 1))]}
+  else
+    (( sel + 1 >= send )) && return 0
+    target=${IDS[$((sel + 1))]}
+  fi
+  tmux swap-window -s "$wid" -t "$target" 2>/dev/null || return 0
+  refresh_to "${SESS_IDS[$sess]}" "$wid" 0
+}
 load_data || { rm -rf "$TMP"; exit 0; }
 # Start on the current window, not always cell 0.
 sel=0
@@ -293,9 +328,9 @@ sess_label() {
 footext() {
   local rel=$((top - s0)) cnt=$((send - s0)) hi lo
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
-  if ((bar)); then printf '←/→ switch session · ↓ back · Enter attach · q cancel · c new · r refresh · session %d/%d' "$((sess + 1))" "$nsess"
-  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · c new · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"
-  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · c new · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  if ((bar)); then printf '←/→ switch · ↓ back · Enter attach · N new · X kill-sess · r refresh · session %d/%d' "$((sess + 1))" "$nsess"
+  elif ((nsess > 1)); then printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · q cancel · c new · N sess · ,/. move · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"
+  else printf '↑↓←→/WASD move · 0-9 jump · Enter jump · q cancel · c new · N sess · ,/. move · X kill · r refresh · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -508,10 +543,17 @@ while IFS= read -rsn1 k; do
   elif [[ $k == [cC] ]]; then
     (( bar )) && continue
     do_new_window; continue
+  elif [[ $k == [nN] ]]; then
+    do_new_session; continue
+  elif [[ $k == "," || $k == "<" ]]; then
+    do_move_window -1; continue
+  elif [[ $k == "." || $k == ">" ]]; then
+    do_move_window 1; continue
   elif [[ $k == X || $k == $'\x7f' ]]; then
     # Capital-only kill (plus Del alias): lowercase x stays ignored as a
-    # fat-finger guard beside WASD. Disabled on the session bar.
-    do_kill_window; continue
+    # fat-finger guard beside WASD. Grid focus kills the window, bar focus
+    # kills the viewed session.
+    if (( bar )); then do_kill_session; else do_kill_window; fi; continue
   elif [[ $k == [rR] ]]; then
     # Explicit refresh: drop all cached captures/medallions so pane content
     # and renamed sessions fault in fresh (c/X reuse the cache on purpose).

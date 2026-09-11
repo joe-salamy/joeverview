@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Fuzzy jump to exact tmux pane with live content preview. Single-session optimized.
-# Bound to `prefix O` via display-popup. Enter=jumps (auto-switches window), Ctrl-X=kills + reloads.
+# Fuzzy jump to exact tmux pane with live content preview. Multi-session aware.
+# Bound to `prefix O` via display-popup. Enter=jumps (switches session/window
+# as needed), Ctrl-X=kills + reloads.
 # Preview is visible-only + ANSI + nowrap; snapshots identify, jumping renders.
 # Row field 1 is #{pane_id} (hidden via --with-nth): bare `W.P` targets can
-# collide with session names, so every -t uses the stable %id.
+# collide with session names, so every -t uses the stable %id. Command +
+# zoom flag disambiguate identical titles/paths.
 set -u
 # LIST is the fzf reload source only; the initial pipe below is literal (no eval).
-LIST="tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{window_name} │ #{pane_title} │ #{pane_current_path}'"
+LIST="tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{session_name} │ #{window_name} │ #{pane_current_command} │ #{pane_title} │ #{pane_current_path}#{?window_zoomed_flag, │ Z,}'"
 PREVIEW="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*$//'"
-TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{window_name} │ #{pane_title} │ #{pane_current_path}' | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
+TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{session_name} │ #{window_name} │ #{pane_current_command} │ #{pane_title} │ #{pane_current_path}#{?window_zoomed_flag, │ Z,}' | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
   --prompt='pane> ' \
   --header='enter=jump  ctrl-x=kill-pane' \
   --preview="$PREVIEW" \
@@ -16,4 +18,16 @@ TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{w
   --bind="ctrl-x:execute-silent(tmux kill-pane -t {1})+reload($LIST)") || exit 0
 [ -z "${TARGET:-}" ] && exit 0
 TARGET_ID=$(printf '%s' "$TARGET" | cut -d' ' -f1)
+# Cross-session parity with the window grid's jump_win: select-pane alone
+# leaves the client behind when the pane lives in another session.
+CUR_SESS=$(tmux display-message -p '#{session_id}' 2>/dev/null)
+P_INFO=$(tmux list-panes -s -F '#{pane_id} #{session_id} #{window_id}' 2>/dev/null | grep -F -m1 -- "$TARGET_ID " || true)
+P_SESS=$(printf '%s' "$P_INFO" | cut -d' ' -f2)
+P_WIN=$(printf '%s' "$P_INFO" | cut -d' ' -f3)
+if [ -n "${P_SESS:-}" ] && [ "${P_SESS:-}" != "${CUR_SESS:-}" ]; then
+  tmux switch-client -t "$P_SESS" 2>/dev/null
+fi
+if [ -n "${P_WIN:-}" ]; then
+  tmux select-window -t "$P_WIN" 2>/dev/null
+fi
 tmux select-pane -t "$TARGET_ID"

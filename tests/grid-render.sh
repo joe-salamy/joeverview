@@ -49,9 +49,10 @@ case "$cmd" in
     else printf 'cap-%s-line1\ncap-%s-line2\n' "$id" "$id"
     fi
     ;;
-  select-window|switch-client|kill-window|new-window)
+  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
+    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
     ;;
   *) exit 0 ;;
 esac
@@ -100,8 +101,23 @@ grep -qF 'select-window -t @w2' "$T/calls-d" || fail "digit-jump log"
 run_picker six '\x1b[B\x1b[B\x1b[B\x1b[Bq' "$T/out-e"
 grep -qF '[5] win5' "$T/out-e" || fail "page-follow content"
 
+# (f) n2 fed . swaps selected window right (@w0 <-> @w1)
+: > "$T/calls-f"
+run_picker n2 '.q' "$T/out-f" "$T/calls-f"
+grep -qF 'swap-window -s @w0 -t @w1' "$T/calls-f" || fail "move-right log"
+
+# (g) n2 fed n creates a session
+: > "$T/calls-g"
+run_picker n2 'nq' "$T/out-g" "$T/calls-g"
+grep -qF 'new-session' "$T/calls-g" || fail "new-session log"
+
+# (h) multi fed Up+X kills the viewed session from the bar
+: > "$T/calls-h"
+run_picker multi '\x1b[AXq' "$T/out-h" "$T/calls-h"
+grep -qF 'kill-session -t $s0' "$T/calls-h" || fail "kill-session log"
+
 # (b) again over scenario outputs
-for f in "$T"/out-c "$T"/out-d "$T"/out-e; do
+for f in "$T"/out-c "$T"/out-d "$T"/out-e "$T"/out-f "$T"/out-g "$T"/out-h; do
   grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
 done
 

@@ -14,7 +14,9 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 | `Enter` | jump to window (on the session bar: attach to session) |
 | `q` / `Esc` | cancel |
 | `c` | new window in the viewed session (cursor lands on it, grid stays open) |
-| `X` / `Del` | kill selected window (grid only, never the session bar) |
+| `n` | new session (grid lands on it with bar focus) |
+| `X` / `Del` | kill selected window (grid focus) or viewed session (bar focus) |
+| `,` / `.` (also `<` / `>`) | move selected window left / right within the session (cursor follows) |
 | `r` | refresh snapshots |
 | down from bottom row | scroll |
 
@@ -22,8 +24,8 @@ Cursor starts on the current window. Selected cell is reverse-highlighted; red t
 
 ## `prefix O` — pane jumper
 
-fzf over `list-panes -s` with content preview. `Enter` jumps (auto-switches window), `Ctrl-X` kills the pane and reloads the list.
+fzf over `list-panes -s` with content preview. Rows show `W.P │ session │ window │ command │ title │ path` (+ `│ Z` when zoomed). `Enter` jumps (switches session/window as needed), `Ctrl-X` kills the pane and reloads the list.
 
 ## `prefix /` — content search
 
-fzf over the last 500 non-blank scrollback lines of every pane (`paneid:line`). `Enter` jumps to the pane holding the match. The thing `prefix w` can't do (names-only).
+fzf over the last 500 non-blank scrollback lines of every pane, each row tagged `session:window` context. `Enter` jumps to the pane holding the match (switches session/window as needed), `Ctrl-Y` yanks the matched line to the tmux buffer. The thing `prefix w` can't do (names-only).
