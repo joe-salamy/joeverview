@@ -406,15 +406,17 @@ vw_of() { python3 -c 'import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z
 # Session medallion for the top border: padded arrows when paging is
 # possible, padded bare name when it is not (single session hides the bar
 # entirely — no focus, no hint). Truncated to fit between the
-# ' Windows ' stamp and the corners. Focus folds reverse like cell titles.
+# ' Windows ' stamp and the corners. Focus reverses the full label, wrapped
+# with a 2-cell normal-video gap each side so white never touches ─
+# (focused footprint = label + 4).
 sess_label() {
   local maxw nm
   if ((nsess > 1)); then
-    maxw=$((W - 34)); ((maxw < 8)) && maxw=8
+    maxw=$((W - 38)); ((maxw < 8)) && maxw=8
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
     printf '  ←  %s  →  ' "$nm"
   else
-    maxw=$((W - 28)); ((maxw < 8)) && maxw=8
+    maxw=$((W - 32)); ((maxw < 8)) && maxw=8
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
     printf '  %s  ' "$nm"
   fi
@@ -476,7 +478,13 @@ draw() {
   nput 0 2 ' Windows '
   [[ -n ${SESS_MED[${SESS_IDS[$sess]}]+_} ]] || { SESS_MED[${SESS_IDS[$sess]}]=$(sess_label); SESS_MEDW[${SESS_IDS[$sess]}]=$(printf '%s' "${SESS_MED[${SESS_IDS[$sess]}]}" | vw_of); }
   sbar=${SESS_MED[${SESS_IDS[$sess]}]}; sblen=${SESS_MEDW[${SESS_IDS[$sess]}]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
-  if ((bar)); then printf -v sbar '\x1b[7m%s\x1b[0m' "$sbar"; fi
+  if ((bar)); then
+    # 2-cell normal-video gap each side so reverse never touches the border dashes.
+    # Focused footprint = label + 4; recenter so the notch covers the full width.
+    printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$sbar"
+    sblen=$((sblen + 4))
+    sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
+  fi
   nput 0 "$sbx" "$sbar"
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue

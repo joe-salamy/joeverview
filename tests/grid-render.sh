@@ -272,7 +272,7 @@ kw=$(grep -nF 'kill-session' "$T/calls-q" | head -1 | cut -d: -f1)
 grep -qF 'select-window' "$T/calls-q" && fail "kill-middle jumped to window"
 grep -qF '←  C  →' "$T/out-q" || fail "kill-middle lands on C"
 tail -c 8192 "$T/out-q" | grep -qF '←  C  →' || fail "kill-middle tail on C"
-tail -c 8192 "$T/out-q" | grep -qF "$(printf '\x1b[7m  ←  C  →  \x1b[0m')" || fail "kill-middle C highlighted"
+tail -c 8192 "$T/out-q" | grep -qF "$(printf '  \x1b[7m  ←  C  →  \x1b[0m  ')" || fail "kill-middle C highlighted"
 tail -c 2048 "$T/out-q" | grep -qF 'session 2/2' || fail "kill-middle session footer"
 
 # (r) rename session from the bar: stay highlighted on the new name
@@ -329,7 +329,7 @@ grep -qF 'rename-session -t $s0 newname' "$T/calls-r" || fail "rename-session lo
 grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
 grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
 grep -qF '←  newname  →' "$T/out-r" || fail "rename lands on new name"
-tail -c 8192 "$T/out-r" | grep -qF "$(printf '\x1b[7m  ←  newname  →  \x1b[0m')" || fail "rename new name highlighted"
+tail -c 8192 "$T/out-r" | grep -qF "$(printf '  \x1b[7m  ←  newname  →  \x1b[0m  ')" || fail "rename new name highlighted"
 tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
 
 # (b) again over scenario outputs
