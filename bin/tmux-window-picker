@@ -536,7 +536,7 @@ draw() {
       if ((idx < send)); then
         if ((idx == sel && bar == 0)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
         else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
-        mapfile -t lines <<<"${SNAP[${IDS[$idx]}]}"
+        mapfile -t lines <<<"${SNAP[${IDS[$idx]}]:-}"
         for ((l = 0; l < snap_h; l++)); do
           put $((roff + 1 + l)) "$coff" "${lines[$l]:-}"
         done

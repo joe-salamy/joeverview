@@ -332,6 +332,88 @@ grep -qF '←  newname  →' "$T/out-r" || fail "rename lands on new name"
 tail -c 8192 "$T/out-r" | grep -qF "$(printf '  \x1b[7m←  newname  →\x1b[0m  ')" || fail "rename new name highlighted"
 tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
 
+# (s) create with empty capture stays open (fresh shell pre-paint leaves SNAP
+# unpinned; draw must tolerate the missing entry instead of aborting under set -u)
+SYN="$T/dyn-s"; mkdir -p "$SYN"
+printf '$s0\tmain\n' > "$SYN/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
+RS=$(mktemp -d "$T/run-s.XXXXXX"); mkdir -p "$RS/bin"
+cat > "$RS/bin/tmux" <<'SSTUB'
+#!/usr/bin/env bash
+cmd=${1:-}; shift || true
+case "$cmd" in
+  display-message)
+    case "$*" in
+      *client_height*) printf '30 60\n' ;;
+      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
+      *pane_current_path*) printf '/tmp\n' ;;
+    esac
+    exit 0
+    ;;
+  list-sessions)
+    cat "$FIXDIR/sessions"
+    ;;
+  list-windows)
+    sid=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then sid=$a; fi
+      prev=$a
+    done
+    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+    cat "$FIXDIR/windows_$key"
+    ;;
+  capture-pane)
+    id=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then id=$a; fi
+      prev=$a
+    done
+    if [[ $id == "@wnew" || $id == "@snew0" ]]; then printf ''; else printf 'cap-line1\ncap-line2\n'; fi
+    ;;
+  new-window)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    grep -qF '@wnew' "$FIXDIR/windows_s0" || printf '@wnew\t2\tnew\ttnew\t/tmp/new\t1\t\n' >> "$FIXDIR/windows_s0"
+    printf '@wnew\n'
+    ;;
+  new-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    grep -qF '$snew' "$FIXDIR/sessions" || printf '$snew\tsecond\n' >> "$FIXDIR/sessions"
+    printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$FIXDIR/windows_snew"
+    printf '$snew\n'
+    ;;
+  select-window|switch-client|kill-window|kill-session|swap-window|select-pane|rename-window|rename-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    ;;
+  *) exit 0 ;;
+esac
+SSTUB
+chmod +x "$RS/bin/tmux"
+# (s1) c with empty new-pane capture: stays open, lands highlighted, no attach
+: > "$T/calls-s1"; : > "$RS/err-s1"
+FIXDIR="$SYN" CALL_LOG="$T/calls-s1" PATH="$RS/bin:$PATH" \
+  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+  'cq' "$REPO" "$T/out-s1" "$RS/err-s1"
+grep -qF 'new-window' "$T/calls-s1" || fail "empty-capture c creates"
+grep -qF 'select-window' "$T/calls-s1" && fail "empty-capture c jumped"
+grep -qF 'switch-client' "$T/calls-s1" && fail "empty-capture c reattached"
+grep -qF '[2] new' "$T/out-s1" || fail "empty-capture c lands on new"
+tail -c 8192 "$T/out-s1" | grep -qF "$(printf '\x1b[7m[2]')" || fail "empty-capture c highlighted"
+# reset state for the session case
+printf '$s0\tmain\n' > "$SYN/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
+rm -f "$SYN/windows_snew"
+# (s2) N with empty new-pane capture: stays open, lands on new session, no attach
+: > "$T/calls-s2"; : > "$RS/err-s2"
+FIXDIR="$SYN" CALL_LOG="$T/calls-s2" PATH="$RS/bin:$PATH" \
+  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+  '\x1b[ANq' "$REPO" "$T/out-s2" "$RS/err-s2"
+grep -qF 'new-session' "$T/calls-s2" || fail "empty-capture N creates"
+grep -qF 'select-window' "$T/calls-s2" && fail "empty-capture N jumped"
+grep -qF 'switch-client' "$T/calls-s2" && fail "empty-capture N reattached"
+grep -qF 'second' "$T/out-s2" || fail "empty-capture N lands on new"
+tail -c 8192 "$T/out-s2" | grep -qF "$(printf '  \x1b[7m←  second  →\x1b[0m  ')" || fail "empty-capture N highlighted"
+tail -c 2048 "$T/out-s2" | grep -qF 'session 2/2' || fail "empty-capture N footer"
+
 # (b) again over scenario outputs
 for f in "$T"/out-*; do
   grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
