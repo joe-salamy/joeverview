@@ -419,7 +419,7 @@ footext() {
   if ((bar)); then
     if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
     else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
-  else printf '↑↓←→/WASD move · ↑ sessions · 0-9 jump · Enter jump · c new-window · R rename · < > move window · X kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  else printf '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window · X kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
