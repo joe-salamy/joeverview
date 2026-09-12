@@ -67,10 +67,10 @@ VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.std
 # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
 read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
 read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
-(( H < 14 )) && H=14; (( W < 47 )) && W=47
-cell_w=$(((W - 7) / COLS)); ((cell_w < 20)) && cell_w=20
-title_w=$((cell_w - 2))
-band_h=$(((H - 9) / VROWS)); ((band_h < 4)) && band_h=4
+(( H < 11 )) && H=11
+cell_w=$(((W - 7) / COLS)); ((cell_w < 4)) && cell_w=4
+title_w=$((cell_w - 2)); ((title_w < 2)) && title_w=2
+band_h=$(((H - 9) / VROWS)); ((band_h < 1)) && band_h=1
 snap_h=$((band_h - 1))
 vx=$((2 + cell_w + 1))
 bot_y=$((H - 2))
@@ -247,6 +247,23 @@ do_kill_session() {
   tmux kill-session -t "$target" 2>/dev/null || return 0
   refresh_keep_off_bar "$fallback" "$off"
 }
+# Footer-inline confirm for session kill (bar focus only): X arms the
+# prompt on the footer row (no draw, no cache drop); y/Y commits via
+# do_kill_session, anything else redraws unchanged. Lone Esc aborts
+# instead of quitting; arrow-key escapes are consumed so no bytes leak
+# into the next read. Sole session never arms (kill refused, as before).
+# Prompt is truncated to W like the footer (small-canvas discipline).
+ask_kill_session() {
+  local nm cnt maxw
+  (( bar )) || return 0
+  (( nsess > 1 )) || return 0
+  cnt=${SESS_COUNT[$sess]}
+  maxw=$((W - 34)); (( maxw < 8 )) && maxw=8
+  nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+  CONFIRM_SID=${SESS_IDS[$sess]}
+  at $((H - 1)) 0
+  printf '%s' "$(printf '\x1b[1;31mKill session %s (%d windows)? y/N\x1b[0m' "$nm" "$cnt" | trunc "$W")"
+}
 # Swap the selected window with its neighbour within the viewed session;
 # cursor follows the moved window by stable ID. Grid focus only.
 do_move_window() {
@@ -269,12 +286,16 @@ do_move_window() {
 # any trailing bytes reprocess as nav keys. Sets READ_NAME ("" = keep).
 # Called directly (never in $()) so the prompt reaches the popup tty.
 read_name() {
-  local kind=$1 old=$2 ch buf=""
+  local kind=$1 old=$2 ch buf="" maxold prompt prompt_visible buf_visible
   READ_NAME=""
+  maxold=$((W - 20)); (( maxold < 4 )) && maxold=4
+  old=$(printf '%s' "$old" | trunc "$maxold")
   at $((H - 1)) 0
   printf '\x1b[?25h'
   stty -echo -icanon min 1 time 0 2>/dev/null || true
   printf 'rename %s [%s]: ' "$kind" "$old"
+  prompt=$(printf 'rename %s [%s]: ' "$kind" "$old")
+  prompt_visible=$(printf '%s' "$prompt" | python3 -c "$VW_PY")
   while IFS= read -rsn1 ch || { buf=""; break; }; do
     if [[ -z ${ch:-} || $ch == $'\n' || $ch == $'\r' ]]; then
       break
@@ -289,6 +310,10 @@ read_name() {
     elif [[ $ch < $' ' ]]; then
       continue
     else
+      buf_visible=$(printf '%s' "$buf$ch" | python3 -c "$VW_PY")
+      if (( prompt_visible + buf_visible >= W - 1 )); then
+        continue
+      fi
       buf+=$ch
       printf '%s' "$ch"
     fi
@@ -340,6 +365,7 @@ place_top
 # reuse surviving cells and capture only the new one.
 load_cell() {
   local wid=${IDS[$1]} cap
+  (( snap_h <= 0 )) && return 0
   [[ -n ${SNAP[$wid]:-} ]] && return 0
   cap=$(tmux capture-pane -pe -t "$wid" 2>/dev/null | trunc "$cell_w" "$snap_h")
   [[ -n $cap ]] && SNAP[$wid]=$cap || unset "SNAP[$wid]" 2>/dev/null || true
@@ -350,6 +376,7 @@ ensure_visible() {
   for ((k = top; k < e; k++)); do load_cell "$k"; done
 }
 bar=0
+CONFIRM_SID=""
 
 printf '\x1b[?25l\x1b[2J'
 stty -echo -icanon min 1 time 0 2>/dev/null
@@ -399,13 +426,13 @@ paint_row() {
 sess_label() {
   local maxw nm
   if ((nsess > 1)); then
-    maxw=$((W - 34)); ((maxw < 8)) && maxw=8
+    maxw=$((W - 34)); ((maxw < 4)) && maxw=4
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
     __SL_OUTER="  ←  $nm  →  "
     __SL_INNER="←  $nm  →"
     printf '%s' "$__SL_OUTER"
   else
-    maxw=$((W - 28)); ((maxw < 8)) && maxw=8
+    maxw=$((W - 28)); ((maxw < 4)) && maxw=4
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
     __SL_OUTER="  $nm  "
     __SL_INNER="$nm"
@@ -518,6 +545,8 @@ draw() {
   nput 0 2 ' Windows '
   [[ -n ${SESS_MED[${SESS_IDS[$sess]}]+_} ]] || { sess_label >/dev/null; SESS_MED[${SESS_IDS[$sess]}]=$__SL_OUTER; SESS_INNER[${SESS_IDS[$sess]}]=$__SL_INNER; SESS_MEDW[${SESS_IDS[$sess]}]=$(printf '%s' "$__SL_OUTER" | python3 -c "$VW_PY"); }
   sbar=${SESS_MED[${SESS_IDS[$sess]}]}; sblen=${SESS_MEDW[${SESS_IDS[$sess]}]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
+  if (( sbx + sblen > W - 1 )); then sbx=$((W - 1 - sblen)); fi
+  if (( sbx < 1 )); then sbx=1; sbar=$(printf '%s' "$sbar" | trunc "$((W - 2))"); sblen=$((W - 2)); fi
   if ((bar)); then
     # Same footprint focused or not: outer 2 stay normal-video gap, only the
     # inner core reverses, so the border length never changes with focus.
@@ -576,7 +605,7 @@ draw() {
       fi
     done
   done
-  put $((H - 1)) 0 "$(footext)"
+  put $((H - 1)) 0 "$(footext | trunc "$W")"
   printf '%s' "$FRAME"
 }
 
@@ -605,6 +634,19 @@ local prev k b d j
 draw
 while IFS= read -rsn1 k; do
   prev=$sel
+  if [[ -n ${CONFIRM_SID:-} ]]; then
+    if [[ $k == $'\x1b' ]]; then
+      # Consume the rest of any escape sequence so its bytes don't
+      # reprocess as nav keys; lone Esc aborts instead of quitting.
+      IFS= read -rsn1 -t 0.25 b || { CONFIRM_SID=""; draw; continue; }
+      if [[ $b == '[' ]]; then IFS= read -rsn1 -t 0.25 d || true; fi
+      CONFIRM_SID=""; draw; continue
+    elif [[ $k == [yY] ]]; then
+      CONFIRM_SID=""; do_kill_session; continue
+    else
+      CONFIRM_SID=""; draw; continue
+    fi
+  fi
   if [[ $k == $'\x1b' ]]; then
     IFS= read -rsn1 -t 0.25 b || break
     [[ $b == '[' ]] || continue
@@ -666,9 +708,9 @@ while IFS= read -rsn1 k; do
     do_move_window 1; continue
   elif [[ $k == X ]]; then
     # Capital-only kill: lowercase x stays ignored as a fat-finger guard
-    # beside WASD. Grid focus kills the window, bar focus kills the viewed
-    # session.
-    if (( bar )); then do_kill_session; else do_kill_window; fi; continue
+    # beside WASD. Grid focus kills the window at once; bar focus arms a
+    # footer y/N confirm and kills only on y (see ask_kill_session).
+    if (( bar )); then ask_kill_session; else do_kill_window; fi; continue
   elif [[ $k == r ]]; then
     # Explicit refresh: drop all cached captures/medallions so pane content
     # and renamed sessions fault in fresh (c/X reuse the cache on purpose).
@@ -694,7 +736,7 @@ while IFS= read -rsn1 k; do
       paint_row $(((sel - top) / COLS))
     fi
     # Direct write (not put): FRAME is only flushed in draw().
-    at $((H - 1)) 0; footext
+    at $((H - 1)) 0; printf '%s' "$(footext | trunc "$W")"
   else
     while ((sel < top)); do top=$((top - COLS)); done
     while ((sel > top + COLS * VROWS - 1)); do top=$((top + COLS)); done

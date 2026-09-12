@@ -34,7 +34,7 @@ Session ops only — window keys (`c`, `0`-`9`, `<>`) do nothing here. `↓`/`s`
 | `Enter` | attach to the viewed session |
 | `N` | **new session** (grid lands on it, bar stays focused) |
 | `R` | rename the viewed session (empty input or `Esc` keeps the old name) |
-| `X` | kill the viewed session (disabled when it's the only one — that would strand the client) |
+| `X` | kill the viewed session: asks `Kill session <name> (N windows)? y/N` on the footer row — `y` kills, anything else (including `Esc`) cancels and stays open (disabled when it's the only session — that would strand the client) |
 | `r` | refresh snapshots |
 | `q` / `Esc` | cancel |
 
