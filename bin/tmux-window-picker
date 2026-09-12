@@ -134,14 +134,14 @@ load_data() {
     SESS_MED=(); SESS_MEDW=()
   elif [[ -n ${SESS_MED[@]+x} ]]; then
     for k in "${!SESS_MED[@]}"; do
-      if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED[$k]" "SESS_MEDW[$k]"; fi
+      if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED['$k']" "SESS_MEDW['$k']"; fi
     done
     # Out-of-band renames: explicit renames already drop their own entry.
     for ((k = 0; k < nsess; k++)); do
       sid=${SESS_IDS[$k]}
       if [[ -n ${SESS_MED[$sid]+_} && -n ${old_names[$sid]+_} ]]; then
         if [[ "${old_names[$sid]}" != "${SESS_NAMES[$k]}" ]]; then
-          unset "SESS_MED[$sid]" "SESS_MEDW[$sid]"
+          unset "SESS_MED['$sid']" "SESS_MEDW['$sid']"
         fi
       fi
     done
@@ -236,6 +236,7 @@ do_kill_session() {
   if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
   else fallback=${SESS_IDS[$((sess - 1))]}; fi
   attached=$(tmux display-message -p '#{session_id}' 2>/dev/null) || attached=""
+  attached=${attached%% *}  # live reply is one id; other contexts may append the window id
   if [[ -n $attached && $target == "$attached" ]]; then
     tmux switch-client -t "$fallback" 2>/dev/null || return 0
   fi
@@ -313,7 +314,7 @@ do_rename_session() {
   read_name "session" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
   tmux rename-session -t "$sid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
-  unset "SESS_MED[$sid]" "SESS_MEDW[$sid]" 2>/dev/null || true
+  unset "SESS_MED['$sid']" "SESS_MEDW['$sid']" 2>/dev/null || true
   refresh_to "$sid" "" 1 "$off"
 }
 load_data || { rm -rf "$TMP"; exit 0; }

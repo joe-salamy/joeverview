@@ -208,6 +208,130 @@ FIXDIR="$DYN" CALL_LOG="$T/calls-p" PATH="$RP/bin:$PATH" \
 grep -qF 'new-session' "$T/calls-p" || fail "medallion-1to2 new-session"
 grep -qF '←  main  →' "$T/out-p" || fail "medallion-1to2 first-session-arrows"
 
+# (q) kill middle session from the bar: pre-switch, then kill, land highlighted on C
+QYN="$T/dyn-q"; mkdir -p "$QYN"
+printf '$s0\tA\n$s1\tB\n$s2\tC\n' > "$QYN/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$QYN/windows_s0"
+printf '@w1\t0\twin1\tt1\t/tmp/w1\t1\t\n' > "$QYN/windows_s1"
+printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$QYN/windows_s2"
+RQ=$(mktemp -d "$T/run-q.XXXXXX"); mkdir -p "$RQ/bin"
+cat > "$RQ/bin/tmux" <<'QSTUB'
+#!/usr/bin/env bash
+cmd=${1:-}; shift || true
+case "$cmd" in
+  display-message)
+    case "$*" in
+      *client_height*) printf '30 60\n' ;;
+      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
+      *pane_current_path*) printf '/tmp\n' ;;
+    esac
+    exit 0
+    ;;
+  list-sessions)
+    cat "$FIXDIR/sessions"
+    ;;
+  list-windows)
+    sid=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then sid=$a; fi
+      prev=$a
+    done
+    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+    cat "$FIXDIR/windows_$key"
+    ;;
+  capture-pane)
+    printf 'cap-line1\ncap-line2\n'
+    ;;
+  switch-client|select-window|kill-window|new-window|new-session|swap-window|select-pane|rename-window|rename-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
+    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
+    ;;
+  kill-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    tgt=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then tgt=$a; fi
+      prev=$a
+    done
+    grep -vF "$tgt" "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
+    ;;
+  *) exit 0 ;;
+esac
+QSTUB
+chmod +x "$RQ/bin/tmux"
+: > "$T/calls-q"; : > "$RQ/err"
+CUR_SID='$s1' CUR_WID='@w1' FIXDIR="$QYN" CALL_LOG="$T/calls-q" PATH="$RQ/bin:$PATH" \
+  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+  '\x1b[AXq' "$REPO" "$T/out-q" "$RQ/err"
+grep -qF 'switch-client -t $s2' "$T/calls-q" || fail "kill-preswitch target"
+grep -qF 'kill-session -t $s1' "$T/calls-q" || fail "kill-middle log"
+sw=$(grep -nF 'switch-client' "$T/calls-q" | head -1 | cut -d: -f1)
+kw=$(grep -nF 'kill-session' "$T/calls-q" | head -1 | cut -d: -f1)
+(( sw < kw )) || fail "kill-preswitch order"
+grep -qF 'select-window' "$T/calls-q" && fail "kill-middle jumped to window"
+grep -qF '←  C  →' "$T/out-q" || fail "kill-middle lands on C"
+tail -c 8192 "$T/out-q" | grep -qF '←  C  →' || fail "kill-middle tail on C"
+tail -c 8192 "$T/out-q" | grep -qF "$(printf '\x1b[7m  ←  C  →  \x1b[0m')" || fail "kill-middle C highlighted"
+tail -c 2048 "$T/out-q" | grep -qF 'session 2/2' || fail "kill-middle session footer"
+
+# (r) rename session from the bar: stay highlighted on the new name
+RYN="$T/dyn-r"; mkdir -p "$RYN"
+printf '$s0\tmain\n$s1\tother\n' > "$RYN/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$RYN/windows_s0"
+printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$RYN/windows_s1"
+RR=$(mktemp -d "$T/run-r.XXXXXX"); mkdir -p "$RR/bin"
+cat > "$RR/bin/tmux" <<'RSTUB'
+#!/usr/bin/env bash
+cmd=${1:-}; shift || true
+case "$cmd" in
+  display-message)
+    case "$*" in
+      *client_height*) printf '30 60\n' ;;
+      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
+      *pane_current_path*) printf '/tmp\n' ;;
+    esac
+    exit 0
+    ;;
+  list-sessions)
+    cat "$FIXDIR/sessions"
+    ;;
+  list-windows)
+    sid=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then sid=$a; fi
+      prev=$a
+    done
+    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+    cat "$FIXDIR/windows_$key"
+    ;;
+  capture-pane)
+    printf 'cap-line1\ncap-line2\n'
+    ;;
+  rename-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    sed -i 's/\tmain$/\tnewname/' "$FIXDIR/sessions"
+    ;;
+  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane|rename-window)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
+    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
+    ;;
+  *) exit 0 ;;
+esac
+RSTUB
+chmod +x "$RR/bin/tmux"
+: > "$T/calls-r"; : > "$RR/err"
+CUR_SID='$s0' CUR_WID='@w0' FIXDIR="$RYN" CALL_LOG="$T/calls-r" PATH="$RR/bin:$PATH" \
+  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+  '\x1b[ARnewname\nq' "$REPO" "$T/out-r" "$RR/err"
+grep -qF 'rename-session -t $s0 newname' "$T/calls-r" || fail "rename-session log"
+grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
+grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
+grep -qF '←  newname  →' "$T/out-r" || fail "rename lands on new name"
+tail -c 8192 "$T/out-r" | grep -qF "$(printf '\x1b[7m  ←  newname  →  \x1b[0m')" || fail "rename new name highlighted"
+tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
+
 # (b) again over scenario outputs
 for f in "$T"/out-*; do
   grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
