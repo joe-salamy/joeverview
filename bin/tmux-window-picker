@@ -192,17 +192,18 @@ refresh_to() {
   draw
 }
 # New window in the viewed session, starting in the selected cell's
-# directory; cursor lands on it. Falls back to tmux default-path when the
-# path is empty/unreadable (e.g. deleted dir).
+# directory; grid cursor lands on it. Created detached (-d) so the
+# underlying client keeps its window — overview stays open. Falls back
+# to tmux default-path when the path is empty/unreadable (e.g. deleted dir).
 do_new_window() {
   local target newid dir
   target=${SESS_IDS[$sess]}
   dir=$(tmux display-message -p -t "${IDS[$sel]}" '#{pane_current_path}' 2>/dev/null) || dir=""
   if [[ -n $dir ]]; then
-    newid=$(tmux new-window -P -F "#{window_id}" -t "$target" -c "$dir" 2>/dev/null) || \
-      newid=$(tmux new-window -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
+    newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" -c "$dir" 2>/dev/null) || \
+      newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
   else
-    newid=$(tmux new-window -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
+    newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
   fi
   # Drop any stale capture under a recycled window_id so ensure_visible()
   # faults the new window in fresh (ids are unique in practice).
