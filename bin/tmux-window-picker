@@ -343,20 +343,9 @@ load_cell() {
   if [[ -s $f ]]; then SNAP[$wid]=$(<"$f"); else rm -f "$f"; unset "SNAP[$wid]" 2>/dev/null || true; fi
 }
 ensure_visible() {
-  local e=$((top + COLS * VROWS)) k retry=0
+  local e=$((top + COLS * VROWS)) k
   ((e > send)) && e=$send
   for ((k = top; k < e; k++)); do load_cell "$k"; done
-  for ((k = top; k < e; k++)); do
-    [[ -n ${SNAP[${IDS[$k]}]+_} ]] || { retry=1; break; }
-  done
-  if ((retry)); then
-    # Fresh shells paint ~100-300ms after new-window; one delayed pass
-    # catches the first prompt instead of pinning blank.
-    sleep 0.3 2>/dev/null || true
-    for ((k = top; k < e; k++)); do
-      [[ -n ${SNAP[${IDS[$k]}]+_} ]] || load_cell "$k"
-    done
-  fi
 }
 bar=0
 
