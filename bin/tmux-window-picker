@@ -329,22 +329,34 @@ for ((k = 0; k < nsess; k++)); do
 done
 s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
 place_top
-# On-demand snapshots keyed by stable window_id: a present SNAP entry (or
-# its $TMP/$wid backing file) is the loaded flag. draw() ensures its page,
+# On-demand snapshots keyed by stable window_id: a present non-empty SNAP entry (or
+# its $TMP/$wid backing file) is the loaded flag. Empty captures (fresh shell
+# pre-paint) are never pinned so later draws retry. draw() ensures its page,
 # so scrolls and session switches fault missing cells in synchronously,
 # while add/delete refreshes reuse surviving cells and capture only the new one.
 load_cell() {
   local wid=${IDS[$1]} f
   f="$TMP/$wid"
-  [[ -n ${SNAP[$wid]+_} ]] && return 0
-  if [[ -f $f ]]; then SNAP[$wid]=$(<"$f"); return 0; fi
+  if [[ -n ${SNAP[$wid]+_} ]]; then [[ -n ${SNAP[$wid]} ]] && return 0; fi
+  if [[ -f $f && -s $f ]]; then SNAP[$wid]=$(<"$f"); [[ -n ${SNAP[$wid]} ]] && return 0; fi
   tmux capture-pane -pe -t "$wid" 2>/dev/null | trunc "$cell_w" "$snap_h" > "$f"
-  SNAP[$wid]=$(<"$f")
+  if [[ -s $f ]]; then SNAP[$wid]=$(<"$f"); else rm -f "$f"; unset "SNAP[$wid]" 2>/dev/null || true; fi
 }
 ensure_visible() {
-  local e=$((top + COLS * VROWS)) k
+  local e=$((top + COLS * VROWS)) k retry=0
   ((e > send)) && e=$send
   for ((k = top; k < e; k++)); do load_cell "$k"; done
+  for ((k = top; k < e; k++)); do
+    [[ -n ${SNAP[${IDS[$k]}]+_} ]] || { retry=1; break; }
+  done
+  if ((retry)); then
+    # Fresh shells paint ~100-300ms after new-window; one delayed pass
+    # catches the first prompt instead of pinning blank.
+    sleep 0.3 2>/dev/null || true
+    for ((k = top; k < e; k++)); do
+      [[ -n ${SNAP[${IDS[$k]}]+_} ]] || load_cell "$k"
+    done
+  fi
 }
 bar=0
 
