@@ -11,11 +11,16 @@ trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL $1"; exit 1; }
 
 # Write stub tmux into $1/bin/tmux (executable). Reads $FIXDIR + $CALL_LOG.
+# Hooks: CAP_EMPTY=1 prints empty captures (test s); ON_NEW_WINDOW/ON_NEW_SESSION
+# point at files appended on new-window/new-session (tests p/s1/s2).
+# kill-session/rename-session mutate $FIXDIR generically; run_picker copies
+# fixtures to temp so the repo never dirties.
 mk_stub() {
   mkdir -p "$1/bin"
   cat > "$1/bin/tmux" <<'STUB'
 #!/usr/bin/env bash
-# Stub tmux for grid-render harness. Env: FIXDIR (fixture dir), CALL_LOG.
+# Stub tmux for grid-render harness. Env: FIXDIR (fixture dir), CALL_LOG,
+# CAP_EMPTY, ON_NEW_WINDOW, ON_NEW_SESSION.
 cmd=${1:-}; shift || true
 case "$cmd" in
   display-message)
@@ -39,6 +44,7 @@ case "$cmd" in
     cat "$FIXDIR/windows_$key"
     ;;
   capture-pane)
+    if [[ -n ${CAP_EMPTY:-} ]]; then printf ''; exit 0; fi
     id=""; prev=""
     for a in "$@"; do
       if [[ $prev == "-t" ]]; then id=$a; fi
@@ -49,10 +55,49 @@ case "$cmd" in
     else printf 'cap-%s-line1\ncap-%s-line2\n' "$id" "$id"
     fi
     ;;
-  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane|rename-window|rename-session)
+  new-window)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
-    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
+    if [[ -n ${ON_NEW_WINDOW:-} && -f ${ON_NEW_WINDOW:-} ]]; then
+      sid=""; prev=""
+      for a in "$@"; do
+        if [[ $prev == "-t" ]]; then sid=$a; fi
+        prev=$a
+      done
+      key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+      grep -qF '@wnew' "$FIXDIR/windows_$key" 2>/dev/null || cat "$ON_NEW_WINDOW" >> "$FIXDIR/windows_$key"
+    fi
+    printf '@wnew\n'
+    ;;
+  new-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if [[ -n ${ON_NEW_SESSION:-} && -f ${ON_NEW_SESSION:-} ]]; then
+      if ! grep -qF '$snew' "$FIXDIR/sessions" 2>/dev/null; then cat "$ON_NEW_SESSION" >> "$FIXDIR/sessions"; fi
+    fi
+    printf '$snew\n'
+    ;;
+  kill-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    tgt=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then tgt=$a; fi
+      prev=$a
+    done
+    if [[ -n $tgt && -f "$FIXDIR/sessions" ]]; then grep -vF "$tgt" "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"; fi
+    ;;
+  rename-session)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    sid=""; new=""; prev=""
+    for a in "$@"; do
+      if [[ $prev == "-t" ]]; then sid=$a; fi
+      prev=$a
+    done
+    new="${@: -1}"
+    if [[ -n $sid && -n $new && -f "$FIXDIR/sessions" ]]; then
+      awk -v sid="$sid" -v new="$new" 'BEGIN{FS=OFS="\t"} $1==sid{$2=new} {print}' "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
+    fi
+    ;;
+  select-window|switch-client|kill-window|swap-window|select-pane|rename-window)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     ;;
   *) exit 0 ;;
 esac
@@ -61,13 +106,16 @@ STUB
 }
 
 # run_picker <fixture> <printf-%b-input> <outfile> [call_log]
+# Copies the fixture to temp so stub mutations (new/kill/rename) never dirty the repo.
 run_picker() {
   local fix=$1 input=$2 out=$3 log=${4:-/dev/null}
-  local r
+  local r fdir
   r=$(mktemp -d "$T/run.XXXXXX")
+  fdir=$(mktemp -d "$T/fix.XXXXXX")
+  cp -r "$FIXBASE/$fix/." "$fdir/"
   mk_stub "$r"
   : > "$r/err"
-  FIXDIR="$FIXBASE/$fix" CALL_LOG="$log" PATH="$r/bin:$PATH" \
+  FIXDIR="$fdir" CALL_LOG="$log" PATH="$r/bin:$PATH" \
     bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
     "$input" "$REPO" "$out" "$r/err"
 }
@@ -75,8 +123,12 @@ run_picker() {
 # (a) q-only goldens for n1-n4 + multi
 for name in n1 n2 n3 n4 multi; do
   [[ -f "$FIXBASE/golden-$name.out" ]] || fail "golden-$name missing"
-  run_picker "$name" 'q' "$T/out-$name"
-  cmp -s "$T/out-$name" "$FIXBASE/golden-$name.out" || fail "golden-$name diff"
+  if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+    run_picker "$name" 'q' "$FIXBASE/golden-$name.out"
+  else
+    run_picker "$name" 'q' "$T/out-$name"
+    cmp -s "$T/out-$name" "$FIXBASE/golden-$name.out" || fail "golden-$name diff"
+  fi
 done
 
 # (b) zero literal \x1b sequences over rendered output
@@ -158,51 +210,10 @@ DYN="$T/dyn-p"; mkdir -p "$DYN"
 cp "$FIXBASE/n1/sessions" "$DYN/sessions"
 cp "$FIXBASE/n1/windows_s0" "$DYN/windows_s0"
 printf '@w9\t0\twin9\tt9\t/tmp/w9\t1\t\n' > "$DYN/windows_snew"
-RP=$(mktemp -d "$T/run-p.XXXXXX"); mkdir -p "$RP/bin"
-cat > "$RP/bin/tmux" <<'PSTUB'
-#!/usr/bin/env bash
-cmd=${1:-}; shift || true
-case "$cmd" in
-  display-message)
-    case "$*" in
-      *client_height*) printf '30 60\n' ;;
-      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
-      *pane_current_path*) printf '/tmp\n' ;;
-    esac
-    exit 0
-    ;;
-  list-sessions)
-    cat "$FIXDIR/sessions"
-    ;;
-  list-windows)
-    sid=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
-    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-    cat "$FIXDIR/windows_$key"
-    ;;
-  capture-pane)
-    printf 'cap-line1\ncap-line2\n'
-    ;;
-  new-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    if ! grep -q 'snew' "$FIXDIR/sessions"; then
-      printf '$snew\tsecond\n' >> "$FIXDIR/sessions"
-    fi
-    printf '$snew\n'
-    ;;
-  select-window|switch-client|kill-window|new-window|kill-session|swap-window|select-pane|rename-window|rename-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
-    ;;
-  *) exit 0 ;;
-esac
-PSTUB
-chmod +x "$RP/bin/tmux"
+printf '$snew\tsecond\n' > "$DYN/on_new_session"
+RP=$(mktemp -d "$T/run-p.XXXXXX"); mk_stub "$RP"
 : > "$T/calls-p"; : > "$RP/err"
-FIXDIR="$DYN" CALL_LOG="$T/calls-p" PATH="$RP/bin:$PATH" \
+ON_NEW_SESSION="$DYN/on_new_session" FIXDIR="$DYN" CALL_LOG="$T/calls-p" PATH="$RP/bin:$PATH" \
   bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
   '\x1b[AN\x1b[Dq' "$REPO" "$T/out-p" "$RP/err"
 grep -qF 'new-session' "$T/calls-p" || fail "medallion-1to2 new-session"
@@ -214,52 +225,7 @@ printf '$s0\tA\n$s1\tB\n$s2\tC\n' > "$QYN/sessions"
 printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$QYN/windows_s0"
 printf '@w1\t0\twin1\tt1\t/tmp/w1\t1\t\n' > "$QYN/windows_s1"
 printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$QYN/windows_s2"
-RQ=$(mktemp -d "$T/run-q.XXXXXX"); mkdir -p "$RQ/bin"
-cat > "$RQ/bin/tmux" <<'QSTUB'
-#!/usr/bin/env bash
-cmd=${1:-}; shift || true
-case "$cmd" in
-  display-message)
-    case "$*" in
-      *client_height*) printf '30 60\n' ;;
-      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
-      *pane_current_path*) printf '/tmp\n' ;;
-    esac
-    exit 0
-    ;;
-  list-sessions)
-    cat "$FIXDIR/sessions"
-    ;;
-  list-windows)
-    sid=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
-    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-    cat "$FIXDIR/windows_$key"
-    ;;
-  capture-pane)
-    printf 'cap-line1\ncap-line2\n'
-    ;;
-  switch-client|select-window|kill-window|new-window|new-session|swap-window|select-pane|rename-window|rename-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
-    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
-    ;;
-  kill-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    tgt=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then tgt=$a; fi
-      prev=$a
-    done
-    grep -vF "$tgt" "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
-    ;;
-  *) exit 0 ;;
-esac
-QSTUB
-chmod +x "$RQ/bin/tmux"
+RQ=$(mktemp -d "$T/run-q.XXXXXX"); mk_stub "$RQ"
 : > "$T/calls-q"; : > "$RQ/err"
 CUR_SID='$s1' CUR_WID='@w1' FIXDIR="$QYN" CALL_LOG="$T/calls-q" PATH="$RQ/bin:$PATH" \
   bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
@@ -280,47 +246,7 @@ RYN="$T/dyn-r"; mkdir -p "$RYN"
 printf '$s0\tmain\n$s1\tother\n' > "$RYN/sessions"
 printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$RYN/windows_s0"
 printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$RYN/windows_s1"
-RR=$(mktemp -d "$T/run-r.XXXXXX"); mkdir -p "$RR/bin"
-cat > "$RR/bin/tmux" <<'RSTUB'
-#!/usr/bin/env bash
-cmd=${1:-}; shift || true
-case "$cmd" in
-  display-message)
-    case "$*" in
-      *client_height*) printf '30 60\n' ;;
-      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
-      *pane_current_path*) printf '/tmp\n' ;;
-    esac
-    exit 0
-    ;;
-  list-sessions)
-    cat "$FIXDIR/sessions"
-    ;;
-  list-windows)
-    sid=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
-    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-    cat "$FIXDIR/windows_$key"
-    ;;
-  capture-pane)
-    printf 'cap-line1\ncap-line2\n'
-    ;;
-  rename-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    sed -i 's/\tmain$/\tnewname/' "$FIXDIR/sessions"
-    ;;
-  select-window|switch-client|kill-window|new-window|kill-session|new-session|swap-window|select-pane|rename-window)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    if [[ $cmd == new-window ]]; then printf '@wnew\n'; fi
-    if [[ $cmd == new-session ]]; then printf '$snew\n'; fi
-    ;;
-  *) exit 0 ;;
-esac
-RSTUB
-chmod +x "$RR/bin/tmux"
+RR=$(mktemp -d "$T/run-r.XXXXXX"); mk_stub "$RR"
 : > "$T/calls-r"; : > "$RR/err"
 CUR_SID='$s0' CUR_WID='@w0' FIXDIR="$RYN" CALL_LOG="$T/calls-r" PATH="$RR/bin:$PATH" \
   bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
@@ -337,60 +263,13 @@ tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
 SYN="$T/dyn-s"; mkdir -p "$SYN"
 printf '$s0\tmain\n' > "$SYN/sessions"
 printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
-RS=$(mktemp -d "$T/run-s.XXXXXX"); mkdir -p "$RS/bin"
-cat > "$RS/bin/tmux" <<'SSTUB'
-#!/usr/bin/env bash
-cmd=${1:-}; shift || true
-case "$cmd" in
-  display-message)
-    case "$*" in
-      *client_height*) printf '30 60\n' ;;
-      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
-      *pane_current_path*) printf '/tmp\n' ;;
-    esac
-    exit 0
-    ;;
-  list-sessions)
-    cat "$FIXDIR/sessions"
-    ;;
-  list-windows)
-    sid=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
-    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-    cat "$FIXDIR/windows_$key"
-    ;;
-  capture-pane)
-    id=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then id=$a; fi
-      prev=$a
-    done
-    if [[ $id == "@wnew" || $id == "@snew0" ]]; then printf ''; else printf 'cap-line1\ncap-line2\n'; fi
-    ;;
-  new-window)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    grep -qF '@wnew' "$FIXDIR/windows_s0" || printf '@wnew\t2\tnew\ttnew\t/tmp/new\t1\t\n' >> "$FIXDIR/windows_s0"
-    printf '@wnew\n'
-    ;;
-  new-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    grep -qF '$snew' "$FIXDIR/sessions" || printf '$snew\tsecond\n' >> "$FIXDIR/sessions"
-    printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$FIXDIR/windows_snew"
-    printf '$snew\n'
-    ;;
-  select-window|switch-client|kill-window|kill-session|swap-window|select-pane|rename-window|rename-session)
-    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    ;;
-  *) exit 0 ;;
-esac
-SSTUB
-chmod +x "$RS/bin/tmux"
+printf '@wnew\t2\tnew\ttnew\t/tmp/new\t1\t\n' > "$SYN/on_new_window"
+printf '$snew\tsecond\n' > "$SYN/on_new_session"
+printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$SYN/windows_snew"
+RS=$(mktemp -d "$T/run-s.XXXXXX"); mk_stub "$RS"
 # (s1) c with empty new-pane capture: stays open, lands highlighted, no attach
 : > "$T/calls-s1"; : > "$RS/err-s1"
-FIXDIR="$SYN" CALL_LOG="$T/calls-s1" PATH="$RS/bin:$PATH" \
+CAP_EMPTY=1 ON_NEW_WINDOW="$SYN/on_new_window" FIXDIR="$SYN" CALL_LOG="$T/calls-s1" PATH="$RS/bin:$PATH" \
   bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
   'cq' "$REPO" "$T/out-s1" "$RS/err-s1"
 grep -qF 'new-window' "$T/calls-s1" || fail "empty-capture c creates"
@@ -401,10 +280,9 @@ tail -c 8192 "$T/out-s1" | grep -qF "$(printf '\x1b[7m[2]')" || fail "empty-capt
 # reset state for the session case
 printf '$s0\tmain\n' > "$SYN/sessions"
 printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
-rm -f "$SYN/windows_snew"
 # (s2) N with empty new-pane capture: stays open, lands on new session, no attach
 : > "$T/calls-s2"; : > "$RS/err-s2"
-FIXDIR="$SYN" CALL_LOG="$T/calls-s2" PATH="$RS/bin:$PATH" \
+CAP_EMPTY=1 ON_NEW_SESSION="$SYN/on_new_session" FIXDIR="$SYN" CALL_LOG="$T/calls-s2" PATH="$RS/bin:$PATH" \
   bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
   '\x1b[ANq' "$REPO" "$T/out-s2" "$RS/err-s2"
 grep -qF 'new-session' "$T/calls-s2" || fail "empty-capture N creates"

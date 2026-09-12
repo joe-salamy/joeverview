@@ -7,10 +7,11 @@
 # collide with session names, so every -t uses the stable %id. Command +
 # zoom flag disambiguate identical titles/paths.
 set -u
-# LIST is the fzf reload source only; the initial pipe below is literal (no eval).
+# single source: edit LIST only
 LIST="tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{session_name} │ #{window_name} │ #{pane_current_command} │ #{pane_title} │ #{pane_current_path}#{?window_zoomed_flag, │ Z,}'"
+# fzf preview stays sed (grid uses python; preview must stay fast) — do not unify into python.
 PREVIEW="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*$//'"
-TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{session_name} │ #{window_name} │ #{pane_current_command} │ #{pane_title} │ #{pane_current_path}#{?window_zoomed_flag, │ Z,}' | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
+TARGET=$(eval "$LIST" | fzf --ansi --with-nth=2.. --reverse --border --height=100% \
   --prompt='pane> ' \
   --header='enter=jump  ctrl-x=kill-pane' \
   --preview="$PREVIEW" \
@@ -20,14 +21,11 @@ TARGET=$(tmux list-panes -s -F '#{pane_id} #{window_index}.#{pane_index} │ #{s
 TARGET_ID=$(printf '%s' "$TARGET" | cut -d' ' -f1)
 # Cross-session parity with the window grid's jump_win: select-pane alone
 # leaves the client behind when the pane lives in another session.
+# display-message -t resolves session/window directly; dead panes fall back
+# to select-pane failing silently as before.
+P_IDS=$(tmux display-message -p -t "$TARGET_ID" '#{session_id} #{window_id}' 2>/dev/null) || P_IDS=""
+P_SESS=${P_IDS%% *}; P_WIN=${P_IDS##* }
 CUR_SESS=$(tmux display-message -p '#{session_id}' 2>/dev/null)
-P_INFO=$(tmux list-panes -s -F '#{pane_id} #{session_id} #{window_id}' 2>/dev/null | grep -F -m1 -- "$TARGET_ID " || true)
-P_SESS=$(printf '%s' "$P_INFO" | cut -d' ' -f2)
-P_WIN=$(printf '%s' "$P_INFO" | cut -d' ' -f3)
-if [ -n "${P_SESS:-}" ] && [ "${P_SESS:-}" != "${CUR_SESS:-}" ]; then
-  tmux switch-client -t "$P_SESS" 2>/dev/null
-fi
-if [ -n "${P_WIN:-}" ]; then
-  tmux select-window -t "$P_WIN" 2>/dev/null
-fi
+if [[ -n ${P_SESS:-} && ${P_SESS:-} != "${CUR_SESS:-}" ]]; then tmux switch-client -t "$P_SESS" 2>/dev/null; fi
+if [[ -n ${P_WIN:-} ]]; then tmux select-window -t "$P_WIN" 2>/dev/null; fi
 tmux select-pane -t "$TARGET_ID"

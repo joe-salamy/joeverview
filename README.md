@@ -41,7 +41,8 @@ Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DES
 bin/                  the three pickers (source of truth)
 tmux/joeverview.conf  the three bind-key lines, sourced from ~/.tmux.conf
 docs/                 USAGE.md, DESIGN.md
-tests/smoke.sh        syntax + symlink + isolated-server binding check
+tests/smoke.sh        syntax + symlink + bindings + grid-render (single entry point)
+tests/grid-render.sh  stub-tmux goldens + interactions (also run via smoke)
 install.sh            symlink + wire + reload, idempotent
 ```
 

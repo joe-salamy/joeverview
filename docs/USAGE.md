@@ -4,7 +4,7 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 ## `prefix o` — window grid
 
-2×2 snapshot grid with two focuses. The footer always shows exactly the keys that work right now — unlisted keys do nothing (letter keys accept either case, except `x`, which never kills).
+2×2 snapshot grid with two focuses. The footer always shows exactly the keys that work right now — unlisted keys do nothing (letter keys accept either case except `x`, and `r`≠`R` (refresh vs rename); `x` never kills).
 
 ### Window focus (the grid)
 

@@ -2,7 +2,6 @@
 # joeverview installer — symlinks bin/* into ~/.local/bin and wires
 # `source-file .../tmux/joeverview.conf` into ~/.tmux.conf. Idempotent.
 set -euo pipefail
-[[ "$(uname)" == Linux ]] || { echo "joeverview install.sh supports Linux only (GNU sed)" >&2; exit 1; }
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
@@ -15,7 +14,6 @@ mkdir -p "$BIN_DIR"
 for src in "$REPO"/bin/*; do
   name="$(basename "$src")"
   dst="$BIN_DIR/$name"
-  chmod +x "$src"
   if [ -e "$dst" ] && [ ! -L "$dst" ]; then
     bak="$dst.bak-$(date +%Y%m%d%H%M%S)"
     mv "$dst" "$bak"
@@ -28,25 +26,19 @@ done
 # 2. Bindings: source the snippet from ~/.tmux.conf (before TPM's run line,
 #    which must stay last). Retire superseded inline binds as comments.
 if [ -f "$TMUX_CONF" ]; then
-  if ! grep -qF "joeverview.conf" "$TMUX_CONF"; then
-    cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
-    sed -i -E 's|^(bind-key +[oO/] +display-popup.*tmux-[-a-z]+.*)$|# superseded by joeverview (see source-file below): \1|' "$TMUX_CONF"
-    if grep -qE '^run .*tpm/tpm' "$TMUX_CONF"; then
-      sed -i "\|^run .*tpm/tpm|isource-file \"$SNIPPET\"" "$TMUX_CONF"
-    else
-      printf 'source-file "%s"\n' "$SNIPPET" >> "$TMUX_CONF"
-    fi
-    echo "wired source-file into $TMUX_CONF"
+  if grep -qF "source-file \"$SNIPPET\"" "$TMUX_CONF"; then
+    echo "source-file already wired, skipping edit"
   else
-      if grep -qF "source-file \"$SNIPPET\"" "$TMUX_CONF"; then
-        echo "source-file already wired, skipping edit"
-      else
-        cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
-        grep -vF "joeverview.conf" "$TMUX_CONF" > "$TMUX_CONF.tmp" || true
-        mv "$TMUX_CONF.tmp" "$TMUX_CONF"
-        printf 'source-file "%s"\n' "$SNIPPET" >> "$TMUX_CONF"
-        echo "rewired stale source-file to $SNIPPET"
-      fi
+    cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
+    awk -v snippet="$SNIPPET" '
+      BEGIN { inserted=0 }
+      /joeverview\.conf/ { next }
+      /^bind-key +[oO\/] +display-popup.*tmux-(window-picker|pane-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
+      /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
+      { print }
+      END { if (!inserted) print "source-file \"" snippet "\"" }
+    ' "$TMUX_CONF" > "$TMUX_CONF.tmp" && mv "$TMUX_CONF.tmp" "$TMUX_CONF"
+    echo "wired source-file into $TMUX_CONF"
   fi
 else
   printf 'source-file "%s"\n' "$SNIPPET" > "$TMUX_CONF"

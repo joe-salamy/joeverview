@@ -23,5 +23,7 @@ echo "$KEYS" | grep -qE 'bind-key +-T prefix +O +.*tmux-pane-picker' \
 echo "$KEYS" | grep -qE 'bind-key +-T prefix +/ +.*tmux-content-search' \
   && echo "OK   prefix /" || { echo "FAIL prefix /"; fail=1; }
 
+# Grid render goldens + interactions (stub-tmux, no live server).
+if bash "$REPO/tests/grid-render.sh"; then echo "OK   grid-render"; else echo "FAIL grid-render"; fail=1; fi
 if [ "$fail" -eq 0 ]; then echo "smoke: PASS"; else echo "smoke: FAIL"; fi
 exit "$fail"
