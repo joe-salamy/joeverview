@@ -8,6 +8,19 @@ BIN_DIR="$HOME/.local/bin"
 TMUX_CONF="$HOME/.tmux.conf"
 SNIPPET="$REPO/tmux/joeverview.conf"
 
+# 0. Dependencies: fail fast with a clear message instead of dying in a popup.
+for cmd in tmux python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "joeverview: needs '$cmd' — please install it first" >&2; exit 1; }
+done
+tmux_v="$(tmux -V | awk '{print $2}')"
+if ! printf '%s\n%s\n' "3.4" "$tmux_v" | sort -VC 2>/dev/null; then
+  echo "joeverview: needs tmux 3.4+ (display-popup) — found: $(tmux -V)" >&2
+  exit 1
+fi
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "joeverview: note: 'fzf' not found — prefix O and prefix / need it; the o grid works without it" >&2
+fi
+
 mkdir -p "$BIN_DIR"
 
 # 1. Pickers: repo bin/ is the source of truth, installed paths are symlinks.

@@ -1,0 +1,4 @@
+# local-only agent notes, never part of the public repo
+AGENTS.md
+# installer backups of ~/.tmux.conf / ~/.local/bin entries
+*.bak-*
