@@ -18,7 +18,7 @@ if ! printf '%s\n%s\n' "3.4" "$tmux_v" | sort -VC 2>/dev/null; then
   exit 1
 fi
 if ! command -v fzf >/dev/null 2>&1; then
-  echo "joeverview: note: 'fzf' not found — prefix O and prefix / need it; the o grid works without it" >&2
+  echo "joeverview: note: 'fzf' not found — prefix / needs it; the o grid works without it" >&2
 fi
 
 mkdir -p "$BIN_DIR"
@@ -36,6 +36,13 @@ for src in "$REPO"/bin/*; do
   echo "linked $dst -> $src"
 done
 
+# Drop symlinks for pickers removed from bin/ (e.g. tmux-pane-picker):
+# re-running install must not leave them dangling.
+if [ -L "$BIN_DIR/tmux-pane-picker" ] && [ ! -e "$REPO/bin/tmux-pane-picker" ]; then
+  rm -f "$BIN_DIR/tmux-pane-picker"
+  echo "removed stale $BIN_DIR/tmux-pane-picker"
+fi
+
 # 2. Bindings: source the snippet from ~/.tmux.conf (before TPM's run line,
 #    which must stay last). Retire superseded inline binds as comments.
 if [ -f "$TMUX_CONF" ]; then
@@ -46,7 +53,7 @@ if [ -f "$TMUX_CONF" ]; then
     awk -v snippet="$SNIPPET" '
       BEGIN { inserted=0 }
       /joeverview\.conf/ { next }
-      /^bind-key +[oO\/] +display-popup.*tmux-(window-picker|pane-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
+      /^bind-key +[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
       /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
       { print }
       END { if (!inserted) print "source-file \"" snippet "\"" }

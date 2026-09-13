@@ -12,17 +12,17 @@ Why: bare `-t 0`/`-t 1` resolve against the *active* window/session, not window 
 
 `prefix o` reads window metadata at launch (`list-sessions` + per-session `list-windows`), truncates all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in synchronously. `r` (or reopen) refreshes after out-of-band changes — there is no way to mirror live panes without moving them.
 
-Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding is trimmed inside the trunc helper (no `sed` stage) — grid only; the fzf pickers still strip with sed.
+Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding is trimmed inside the trunc helper (no `sed` stage) — grid only; the fzf search still strips with sed.
 
 ## Visible-width-aware truncation (never `cut -c`)
 
 System `cut -c` counts bytes (uutils 0.8.0 proven: 172×`─` → 173 bytes), splitting UTF-8 mid-character. The grid embeds a ~40-line python helper via `python3 -c "$PY"` (a heredoc would swallow the capture pipe on stdin): strips OSC hyperlinks, keeps SGR sequences atomic, counts `east_asian_width`, appends reset. `LC_ALL=C.UTF-8` does not fix `cut`.
 
-The fzf pickers (`O`, `/`) use `--ansi --preview-window=…:nowrap` instead — same idea, delegated to fzf.
+The fzf search (`/`) uses `--ansi --preview-window=…:nowrap` instead — same idea, delegated to fzf.
 
 ## The script owns the canvas (`-B`)
 
-`prefix o` uses `display-popup -B` (no tmux border) and draws its own rounded frame (`╭╮╰╯`, gutters, mid rule, stamped ` Windows ` title). Earlier the popup had *two* frames — tmux's default single-line border plus the script's inset rounded one — and the mid rule stopped short of the edges. `-T` needs a tmux border, so the script stamps its title into its own top border instead of using `-T`. (`O`/`/` keep the tmux border + `-T`; fzf draws no frame.)
+`prefix o` uses `display-popup -B` (no tmux border) and draws its own rounded frame (`╭╮╰╯`, gutters, mid rule, stamped ` Windows ` title). Earlier the popup had *two* frames — tmux's default single-line border plus the script's inset rounded one — and the mid rule stopped short of the edges. `-T` needs a tmux border, so the script stamps its title into its own top border instead of using `-T`. (`/` keeps the tmux border + `-T`; fzf draws no frame.)
 
 ## Flicker-free input
 

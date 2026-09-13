@@ -4,7 +4,7 @@ Mission Control for tmux — a better `prefix w`.
 
 `prefix o` opens a fullscreen 2×2 snapshot grid of your windows — arrows/WASD to move, `Enter` to jump, `q` to cancel. No typing, no session list, no directory scan: it shows the windows you have, at full resolution, and gets out of the way. Window and session management (`c`/`X`/`R`, move, rename, kill-confirm) happens inline, without leaving the overview.
 
-Two companions round it out: `prefix O` jumps to an exact pane with live preview, `prefix /` searches scrollback contents across all panes and jumps to the match (the thing `prefix w` can't do — names only).
+One companion rounds it out: `prefix /` searches scrollback contents across all panes and jumps to the match (the thing `prefix w` can't do — names only).
 
 Built for a single-session tmux with `renumber-windows on` and zero-based indexes, but nothing depends on that.
 
@@ -36,7 +36,6 @@ No symlinks needed on this path — `joeverview.tmux` binds the keys straight at
 | binding | what |
 |---|---|
 | `prefix o` | window grid — see `docs/USAGE.md` |
-| `prefix O` | pane jumper — see `docs/USAGE.md` |
 | `prefix /` | scrollback search — see `docs/USAGE.md` |
 
 Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DESIGN.md`](docs/DESIGN.md).
@@ -45,7 +44,7 @@ Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DES
 
 - tmux 3.4+ (`display-popup`)
 - `bash`, `python3` (grid truncation helper)
-- `fzf` — only for `prefix O` and `prefix /`; the `o` grid needs none
+- `fzf` — only for `prefix /`; the `o` grid needs none
 
 ## Uninstall
 
@@ -58,8 +57,8 @@ Removes the `~/.local/bin` symlinks only if they still point at this checkout, d
 ## Layout
 
 ```text
-bin/                  the three pickers (source of truth)
-tmux/joeverview.conf  the three bind-key lines, sourced from ~/.tmux.conf
+bin/                  the two pickers (source of truth)
+tmux/joeverview.conf  the two bind-key lines, sourced from ~/.tmux.conf
 joeverview.tmux       TPM entry point (binds keys at the checkout, no symlinks)
 docs/                 USAGE.md, DESIGN.md
 tests/smoke.sh        syntax + symlink + bindings + grid-render (single entry point)
