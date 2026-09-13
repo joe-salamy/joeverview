@@ -2,12 +2,36 @@
 # Arrow-navigated 2x2 snapshot grid for tmux windows across sessions. Bound to `prefix o`.
 # Full keys: docs/USAGE.md in the repo.
 # Each cell shows the BOTTOM-LEFT of the active pane capture, truncated to cell width at full resolution.
+# Architecture map (read this before hacking):
+#   STATE (globals): SESS_IDS/NAMES/START/COUNT + IDS/TITLES/ALERTS/WIDX/WIN_SESS
+#     arrays, rebuilt by load_data(); SNAP[wid] capture cache keyed by stable
+#     window_id so survivors keep captures across refreshes; SESS_MED* medallion
+#     cache keyed by session_id; sel/sess/top/bar hold cursor/session/page/focus.
+#   LOAD: load_data() re-reads metadata and GCs dead IDs; ensure_visible() faults
+#     only the missing visible cells in via load_cell. Titles truncate in one
+#     python pass; snapshots stay per-cell and lazy.
+#   PAINT: draw() is the only full repaint (buffered into one flushed string);
+#     paint_row() repaints a single title row for same-page moves. at/put/nput
+#     are the only cursor-addressing helpers; footext() owns the footer row.
+#   INPUT: main loop at the bottom (draw, then read-key dispatch). Mutations go
+#     through do_* helpers, which reload via refresh_to() (reseat sel/sess/top by
+#     stable ID) and redraw. Footer is the contract: grid focus runs window ops
+#     only, bar focus session ops only — see docs/USAGE.md.
 set -u
 # JOEVERVIEW_PROFILE=1 prints load-phase timings (ns epoch) to stderr.
 prof() { [[ -n ${JOEVERVIEW_PROFILE:-} ]] && printf '[prof %s] %s\n' "$(date +%s%N)" "$*" >&2 || :; }
 COLS=2; VROWS=2  # Fixed 2x2: mid_y/bot_y and the single mid divider assume VROWS=2.
 
 command -v python3 >/dev/null 2>&1 || { echo "tmux-window-picker needs python3" >&2; exit 1; }
+# Hide the cursor and clear before any blocking work (tmux round-trips,
+# python spawns): the popup starts with a visible cursor at 0,0, so hiding
+# after load_data() flashes it for the whole load. Byte-identical to the old
+# late clear — emitted once, earlier — so render goldens are unaffected.
+saved_stty=$(stty -g 2>/dev/null || true)
+cleanup() { printf '%s' $'\x1b[?25h'; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; }
+trap cleanup EXIT
+printf '\x1b[?25l\x1b[2J'
+stty -echo -icanon min 1 time 0 2>/dev/null
 
 # Visible-width-aware truncation: keeps SGR colors atomic, strips OSC
 # hyperlinks, never splits UTF-8 (system `cut -c` counts bytes). Program goes
@@ -76,9 +100,6 @@ vx=$((2 + cell_w + 1))
 bot_y=$((H - 2))
 mid_y=$((band_h + 3))
 
-saved_stty=$(stty -g 2>/dev/null || true)
-cleanup() { printf '%s' $'\x1b[?25h'; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; }
-trap cleanup EXIT
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
 declare -A SNAP SESS_MED SESS_MEDW SESS_INNER
@@ -377,9 +398,6 @@ ensure_visible() {
 }
 bar=0
 CONFIRM_SID=""
-
-printf '\x1b[?25l\x1b[2J'
-stty -echo -icanon min 1 time 0 2>/dev/null
 
 at() { printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
 
