@@ -132,10 +132,8 @@ for name in n1 n2 n3 n4 multi; do
   fi
 done
 
-# (b) zero literal \x1b sequences over rendered output
-for f in "$T"/out-* "$FIXBASE"/golden-*.out; do
-  grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
-done
+check_no_literal_esc() { for f in "$@"; do grep -qF '\x1b' "$f" && fail "literal-x1b in $f"; done; }
+check_no_literal_esc "$T"/out-* "$FIXBASE"/golden-*.out
 
 # (c) n4 Right-arrow moves selection 0 -> 1 (tail = final repaint state)
 run_picker n4 '\x1b[Cq' "$T/out-c"
@@ -342,9 +340,6 @@ grep -qF '\x1b' "$T/out-u" && fail "literal-x1b in out-u"
 bounds_check "$T/out-u" 20 70
 grep -qF "$(printf '\x1b[7m[1]')" "$T/out-u" || fail "mid70x20 arrow-move select"
 
-# (b) again over scenario outputs
-for f in "$T"/out-*; do
-  grep -qF '\x1b' "$f" && fail "literal-x1b in $f"
-done
+check_no_literal_esc "$T"/out-*
 
 echo "render: PASS"

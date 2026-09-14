@@ -13,7 +13,10 @@ for cmd in tmux python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "joeverview: needs '$cmd' — please install it first" >&2; exit 1; }
 done
 tmux_v="$(tmux -V | awk '{print $2}')"
-if ! printf '%s\n%s\n' "3.4" "$tmux_v" | sort -VC 2>/dev/null; then
+# Portable >=3.4 check (no GNU sort -V): numeric compare on major/minor.
+# shellcheck disable=SC2086 # unquoted $tmux_v intended for word-splitting
+set -- $tmux_v; tmux_maj=${1%%.*}; tmux_min=${1#*.}; tmux_min=${tmux_min%%[^0-9]*}
+if ! { [ "${tmux_maj:-0}" -gt 3 ] || { [ "${tmux_maj:-0}" -eq 3 ] && [ "${tmux_min:-0}" -ge 4 ]; }; } 2>/dev/null; then
   echo "joeverview: needs tmux 3.4+ (display-popup) — found: $(tmux -V)" >&2
   exit 1
 fi
@@ -36,12 +39,8 @@ for src in "$REPO"/bin/*; do
   echo "linked $dst -> $src"
 done
 
-# Drop symlinks for pickers removed from bin/ (e.g. tmux-pane-picker):
-# re-running install must not leave them dangling.
-if [ -L "$BIN_DIR/tmux-pane-picker" ] && [ ! -e "$REPO/bin/tmux-pane-picker" ]; then
-  rm -f "$BIN_DIR/tmux-pane-picker"
-  echo "removed stale $BIN_DIR/tmux-pane-picker"
-fi
+## (retired 2026-09: the prefix-O pane-picker is gone since 59b6bc0; a
+## surviving ~/.local/bin/tmux-pane-picker symlink is user-owned — left alone)
 
 # 2. Bindings: source the snippet from ~/.tmux.conf (before TPM's run line,
 #    which must stay last). Retire superseded inline binds as comments.

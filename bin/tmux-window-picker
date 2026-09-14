@@ -5,18 +5,21 @@
 # Architecture map (read this before hacking):
 #   STATE (globals): SESS_IDS/NAMES/START/COUNT + IDS/TITLES/ALERTS/WIDX/WIN_SESS
 #     arrays, rebuilt by load_data(); SNAP[wid] capture cache keyed by stable
-#     window_id so survivors keep captures across refreshes; SESS_MED* medallion
-#     cache keyed by session_id; sel/sess/top/bar hold cursor/session/page/focus.
+#     window_id so survivors keep captures across refreshes; SESS_MED medallion
+#     cache keyed by session_id (value "outer"$'\x1f'"inner"$'\x1f'"width");
+#     sel/sess/top/bar hold cursor/session/page/focus.
 #   LOAD: load_data() re-reads metadata and GCs dead IDs; ensure_visible() faults
 #     only the missing visible cells in via load_cell. Titles truncate in one
-#     python pass; snapshots stay per-cell and lazy.
-#   PAINT: draw() is the only full repaint (buffered into one flushed string);
-#     paint_row() repaints a single title row for same-page moves. at/put/nput
-#     are the only cursor-addressing helpers; footext() owns the footer row.
+#   PAINT: draw() is the only full repaint (buffered into FRAME, one flush);
+#     paint_row() repaints a single title row for same-page moves. put/nput
+#     append cursor-addressed writes to FRAME (put clears to EOL first);
+#     footext() owns the footer text, paint_footer() renders it.
 #   INPUT: main loop at the bottom (draw, then read-key dispatch). Mutations go
-#     through do_* helpers, which reload via refresh_to() (reseat sel/sess/top by
-#     stable ID) and redraw. Footer is the contract: grid focus runs window ops
-#     only, bar focus session ops only — see docs/USAGE.md.
+#     through do_* helpers, which reload via refresh_to() (keyword args
+#     sid=/wid=/off=/bar=1, reseat sel/sess/top by stable ID) and redraw.
+#     Arrow keys and WASD share nav_up/nav_down/nav_left/nav_right. Footer is
+#     the contract: grid focus runs window ops only, bar focus session ops
+#     only — see docs/USAGE.md.
 set -u
 # JOEVERVIEW_PROFILE=1 prints load-phase timings (ns epoch) to stderr.
 prof() { [[ -n ${JOEVERVIEW_PROFILE:-} ]] && printf '[prof %s] %s\n' "$(date +%s%N)" "$*" >&2 || :; }
@@ -84,6 +87,19 @@ else:
     texts = [t for _, t in rows]
 sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
 trunc() { python3 -c "$PY" "$@"; }
+# Visible width of one line (same east_asian_width rule as PY def vw):
+# strip SGR, count wide→2, combining→0. Footer/prompt fast path avoids a
+# python spawn for plain ASCII, which is the common case.
+vwidth() {
+  local s=$1 bare
+  case $s in
+    *$'\x1b'*) printf '%s' "$s" | python3 -c "$VW_PY" ;;
+    *)
+      bare=$s
+      if ((${#bare} == $(LC_ALL=C printf '%s' "$bare" | wc -c))); then printf '%s' "${#bare}"
+      else printf '%s' "$bare" | python3 -c "$VW_PY"; fi ;;
+  esac
+}
 # keep in sync with PY def vw — same width rule (wide→2, combining→0).
 VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.stdin.read()); print(sum(2 if unicodedata.east_asian_width(c) in ("W","F") else (0 if unicodedata.combining(c) else 1) for c in t))'
 
@@ -91,80 +107,91 @@ VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.std
 # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
 read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
 read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
-(( H < 11 )) && H=11
-cell_w=$(((W - 7) / COLS)); ((cell_w < 4)) && cell_w=4
-title_w=$((cell_w - 2)); ((title_w < 2)) && title_w=2
+MIN_H=11        # title + 2 bands + mid + footer + frame
+FRAME_W=7       # left/right borders + gutters + title padding
+TITLE_PAD=2     # title rows indent 2 inside the cell
+SB_MIN_X=12     # medallion never overlaps the ' Windows ' stamp
+SB_BORDER_PAD=34  # medallion max width reserve (multi-session arrows)
+SB_SINGLE_PAD=28  # medallion max width reserve (bare name)
+(( H < MIN_H )) && H=MIN_H
+cell_w=$(((W - FRAME_W) / COLS)); ((cell_w < 4)) && cell_w=4
+title_w=$((cell_w - TITLE_PAD)); ((title_w < 2)) && title_w=2
 band_h=$(((H - 9) / VROWS)); ((band_h < 1)) && band_h=1
 snap_h=$((band_h - 1))
-vx=$((2 + cell_w + 1))
+vx=$((TITLE_PAD + cell_w + 1))
 bot_y=$((H - 2))
 mid_y=$((band_h + 3))
 
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
-declare -A SNAP SESS_MED SESS_MEDW SESS_INNER
+declare -A SNAP SESS_MED
 # Rebuild session/window metadata from tmux. Snapshots (SNAP assoc only)
 # are keyed by stable window_id, so surviving cells keep their captures
 # across create/kill refreshes; only missing cells fault in via
 # ensure_visible(). Stale windows/sessions are garbage-collected here.
-# Session medallions are keyed by session_id, but their arrow decoration
-# and max width depend on nsess>1, so they are dropped whenever the
+# SESS_MED[sid] is "outer"$'\x1f'"inner"$'\x1f'"width": arrow decoration and
+# max width depend on nsess>1, so every entry is dropped whenever the
 # session count or a session name changes (not just for dead IDs).
+# Globals written: nsess n (counts), the SESS_* and IDS/* arrays, and the
+# SNAP/SESS_MED caches (loop index i and scratch k are local).
 # Returns 1 when no windows remain.
 load_data() {
-  local sid sname wid widx wname wtitle wpath panes alert suffix c k old_nsess
+  local sid sname wid widx wname wtitle wpath panes alert suffix c k old_nsess idx
   local -A seen sess_seen old_names
   old_nsess=${nsess:-0}
-  if [[ -n ${SESS_IDS[@]+x} ]]; then
+  # shellcheck disable=SC2199 # [@]+x is an emptiness probe, never expanded
+  if [[ -n ${SESS_IDS[@]+x} ]] && (( old_nsess > 0 )); then
     for ((k = 0; k < old_nsess; k++)); do old_names[${SESS_IDS[$k]}]=${SESS_NAMES[$k]}; done
   fi
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
   IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=()
-  # globals: nsess n i SESS_IDS/SESS_NAMES/SESS_START/SESS_COUNT IDS/TITLES/ALERTS/WIDX/WIN_SESS/RAW_TITLES (runs in global scope intentionally)
   declare -g nsess n 2>/dev/null || true
-  nsess=0; i=0
+  nsess=0; idx=0
   while IFS=$'\t' read -r sid sname; do
     SESS_IDS[$nsess]=$sid
     SESS_NAMES[$nsess]=$sname
-    SESS_START[$nsess]=$i
+    SESS_START[$nsess]=$idx
     c=0
     while IFS=$'\t' read -r wid widx wname wtitle wpath panes alert; do
-      IDS[$i]=$wid
-      WIDX[$i]=$widx
-      ALERTS[$i]=$alert
-      WIN_SESS[$i]=$sid
+      IDS[$idx]=$wid
+      WIDX[$idx]=$widx
+      ALERTS[$idx]=$alert
+      WIN_SESS[$idx]=$sid
       seen[$wid]=1
       suffix=""
       if ((panes > 1)); then suffix=" ⧉ $panes"; fi
-      RAW_TITLES[$i]="[$widx] $wname │ $wtitle │ $wpath$suffix"
-      i=$((i + 1)); c=$((c + 1))
+      RAW_TITLES[$idx]="[$widx] $wname │ $wtitle │ $wpath$suffix"
+      idx=$((idx + 1)); c=$((c + 1))
     done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
     SESS_COUNT[$nsess]=$c
     sess_seen[$sid]=1
     nsess=$((nsess + 1))
   done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
-  n=$i
+  n=$idx
   [ "$n" -eq 0 ] && return 1
   # Drop snapshots for dead IDs; survivors keep their cache so
   # add/delete only captures the missing cells in ensure_visible().
+  # shellcheck disable=SC2199 # [@]+x is an emptiness probe, never expanded
   if [[ -n ${SNAP[@]+x} ]]; then
     for k in "${!SNAP[@]}"; do
       if [[ -z ${seen[$k]+_} ]]; then unset "SNAP[$k]" 2>/dev/null || true; fi
     done
   fi
   if (( nsess != old_nsess )); then
-    # Arrow decoration and maxw depend on nsess>1: every cached medallion is stale.
-    SESS_MED=(); SESS_MEDW=(); SESS_INNER=()
-  elif [[ -n ${SESS_MED[@]+x} ]]; then
-    for k in "${!SESS_MED[@]}"; do
-      if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED['$k']" "SESS_MEDW['$k']" "SESS_INNER['$k']"; fi
-    done
+    SESS_MED=()
+  else
+    # shellcheck disable=SC2199 # [@]+x is an emptiness probe, never expanded
+    if [[ -n ${SESS_MED[@]+x} ]]; then
+      for k in "${!SESS_MED[@]}"; do
+        if [[ -z ${sess_seen[$k]+_} ]]; then unset "SESS_MED['$k']"; fi
+      done
+    fi
     # Out-of-band renames: explicit renames already drop their own entry.
     for ((k = 0; k < nsess; k++)); do
       sid=${SESS_IDS[$k]}
       if [[ -n ${SESS_MED[$sid]+_} && -n ${old_names[$sid]+_} ]]; then
         if [[ "${old_names[$sid]}" != "${SESS_NAMES[$k]}" ]]; then
-          unset "SESS_MED['$sid']" "SESS_MEDW['$sid']" "SESS_INNER['$sid']"
+          unset "SESS_MED['$sid']"
         fi
       fi
     done
@@ -183,13 +210,20 @@ place_top() {
   (( max_top < s0 )) && max_top=$s0
   if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
 }
-# Re-read metadata and reseat sess/sel/top by stable ID (want_wid="" falls
-# back to want_off, then clamps into the session). keep_bar preserves
-# session-bar focus for r. Full draw; exits quietly when nothing remains
-# (e.g. last window killed).
-# Args: $1=want_sid $2=want_wid ("" = skip) $3=keep_bar $4=want_off (kill path only).
+# Re-read metadata and reseat sess/sel/top by stable ID (wid="" falls back
+# to off, then clamps into the session). bar=1 preserves session-bar focus
+# for r. Full draw; exits quietly when nothing remains (e.g. last window
+# killed). Keyword args, all optional: sid= wid= off= bar=1.
 refresh_to() {
-  local want_sid=${1:-} want_wid=${2:-} keep_bar=${3:-0} want_off=${4:-} k found=0
+  local want_sid="" want_wid="" want_off="" keep_bar=0 a k found=0
+  for a in "$@"; do
+    case $a in
+      sid=*) want_sid=${a#sid=} ;;
+      wid=*) want_wid=${a#wid=} ;;
+      off=*) want_off=${a#off=} ;;
+      bar=1) keep_bar=1 ;;
+    esac
+  done
   load_data || exit 0
   sess=0
   if [[ -n $want_sid ]]; then
@@ -214,8 +248,6 @@ refresh_to() {
   place_top
   draw
 }
-refresh_keep_id() { refresh_to "${1:-}" "${2:-}" 0; }
-refresh_keep_off_bar() { refresh_to "${1:-}" "" 1 "${2:-}"; }
 # New window in the viewed session, starting in the selected cell's
 # directory; grid cursor lands on it. Created detached (-d) so the
 # underlying client keeps its window — overview stays open. Falls back
@@ -230,10 +262,9 @@ do_new_window() {
   else
     newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
   fi
-  # Drop any stale capture under a recycled window_id so ensure_visible()
-  # faults the new window in fresh (ids are unique in practice).
-  unset "SNAP[$newid]" 2>/dev/null || true
-  refresh_keep_id "$target" "$newid"
+  # Window ids are unique: load_data GCs dead IDs and ensure_visible() faults
+  # the new window in fresh.
+  refresh_to sid="$target" wid="$newid"
 }
 # Kill the selected window (grid focus only); stays at the same offset so
 # the next window slides under the cursor (clamped at the end).
@@ -241,14 +272,14 @@ do_kill_window() {
   (( bar )) && return 0
   local target=${SESS_IDS[$sess]} off=$((sel - s0))
   tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
-  refresh_to "$target" "" 0 "$off"
+  refresh_to sid="$target" off="$off"
 }
 # New detached session; grid lands on it with bar focus so the user can
 # keep paging or dive in (Down, then c for windows). Full refresh.
 do_new_session() {
   local newsid
   newsid=$(tmux new-session -d -P -F "#{session_id}" 2>/dev/null) || return 0
-  refresh_keep_off_bar "$newsid"
+  refresh_to sid="$newsid" bar=1
 }
 # Kill the viewed session (bar focus only, never the last one — killing
 # the sole session would strand the client); lands on the session now at
@@ -266,7 +297,7 @@ do_kill_session() {
     tmux switch-client -t "$fallback" 2>/dev/null || return 0
   fi
   tmux kill-session -t "$target" 2>/dev/null || return 0
-  refresh_keep_off_bar "$fallback" "$off"
+  refresh_to sid="$fallback" off="$off" bar=1
 }
 # Footer-inline confirm for session kill (bar focus only): X arms the
 # prompt on the footer row (no draw, no cache drop); y/Y commits via
@@ -279,9 +310,9 @@ ask_kill_session() {
   (( bar )) || return 0
   (( nsess > 1 )) || return 0
   cnt=${SESS_COUNT[$sess]}
-  maxw=$((W - 34)); (( maxw < 8 )) && maxw=8
+  maxw=$((W - SB_BORDER_PAD)); (( maxw < 8 )) && maxw=8
   nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-  CONFIRM_SID=${SESS_IDS[$sess]}
+  confirm_armed=1
   at $((H - 1)) 0
   printf '%s' "$(printf '\x1b[1;31mKill session %s (%d windows)? y/N\x1b[0m' "$nm" "$cnt" | trunc "$W")"
 }
@@ -299,7 +330,7 @@ do_move_window() {
     target=${IDS[$((sel + 1))]}
   fi
   tmux swap-window -s "$wid" -t "$target" 2>/dev/null || return 0
-  refresh_to "${SESS_IDS[$sess]}" "$wid" 0
+  refresh_to sid="${SESS_IDS[$sess]}" wid="$wid"
 }
 # Rename prompt on the footer row: leaves nav mode, shows the cursor, reads
 # a line char-by-char with manual echo. Enter submits, Backspace erases,
@@ -307,16 +338,16 @@ do_move_window() {
 # any trailing bytes reprocess as nav keys. Sets READ_NAME ("" = keep).
 # Called directly (never in $()) so the prompt reaches the popup tty.
 read_name() {
-  local kind=$1 old=$2 ch buf="" maxold prompt prompt_visible buf_visible
+  local kind=$1 old=$2 ch buf="" maxold prompt prompt_visible buf_visible RENAME_PAD=20
   READ_NAME=""
-  maxold=$((W - 20)); (( maxold < 4 )) && maxold=4
+  maxold=$((W - RENAME_PAD)); (( maxold < 4 )) && maxold=4
   old=$(printf '%s' "$old" | trunc "$maxold")
   at $((H - 1)) 0
   printf '\x1b[?25h'
   stty -echo -icanon min 1 time 0 2>/dev/null || true
   printf 'rename %s [%s]: ' "$kind" "$old"
-  prompt=$(printf 'rename %s [%s]: ' "$kind" "$old")
-  prompt_visible=$(printf '%s' "$prompt" | python3 -c "$VW_PY")
+  prompt="rename $kind [$old]"
+  prompt_visible=$(vwidth "$prompt")
   while IFS= read -rsn1 ch || { buf=""; break; }; do
     if [[ -z ${ch:-} || $ch == $'\n' || $ch == $'\r' ]]; then
       break
@@ -331,7 +362,7 @@ read_name() {
     elif [[ $ch < $' ' ]]; then
       continue
     else
-      buf_visible=$(printf '%s' "$buf$ch" | python3 -c "$VW_PY")
+      buf_visible=$(vwidth "$buf$ch")
       if (( prompt_visible + buf_visible >= W - 1 )); then
         continue
       fi
@@ -352,7 +383,7 @@ do_rename_window() {
   read_name "window" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
   tmux rename-window -t "$wid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
-  refresh_to "$sid" "$wid" 0
+  refresh_to sid="$sid" wid="$wid"
 }
 # Rename the viewed session (bar focus only); drops the cached medallion
 # so the new name stamps fresh, keeping the window offset behind the bar.
@@ -364,8 +395,8 @@ do_rename_session() {
   read_name "session" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
   tmux rename-session -t "$sid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
-  unset "SESS_MED['$sid']" "SESS_MEDW['$sid']" "SESS_INNER['$sid']" 2>/dev/null || true
-  refresh_to "$sid" "" 1 "$off"
+  unset "SESS_MED['$sid']" 2>/dev/null || true
+  refresh_to sid="$sid" off="$off" bar=1
 }
 load_data || exit 0
 # Start on the current window, not always cell 0.
@@ -397,22 +428,24 @@ ensure_visible() {
   for ((k = top; k < e; k++)); do load_cell "$k"; done
 }
 bar=0
-CONFIRM_SID=""
+confirm_armed=0
 
 at() { printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
 
-put() { printf -v __put '\x1b[%d;%dH\x1b[K%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$__put; }
-nput() { printf -v __nput '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$__nput; }
+put() { local cell; printf -v cell '\x1b[%d;%dH\x1b[K%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
+nput() { local cell; printf -v cell '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
 # Alert style: bell=bold red, activity=bold yellow (bell wins if both).
 # Selected cells fold reverse into the same SGR so no inner reset kills it.
 title_cell() {
-  local idx=$1 selected=$2 text
-  text="${TITLES[$idx]}"
+  local idx=$1 selected=$2 sgr
   case "${ALERTS[$idx]}" in
-    *B*) if ((selected)); then printf '\x1b[7;1;31m%s\x1b[0m' "$text"; else printf '\x1b[1;31m%s\x1b[0m' "$text"; fi ;;
-    *A*) if ((selected)); then printf '\x1b[7;1;33m%s\x1b[0m' "$text"; else printf '\x1b[1;33m%s\x1b[0m' "$text"; fi ;;
-    *) if ((selected)); then printf '\x1b[7m%s\x1b[0m' "$text"; else printf '%s' "$text"; fi ;;
+    *B*) sgr='1;31' ;;
+    *A*) sgr='1;33' ;;
+    *) sgr='' ;;
   esac
+  ((selected)) && sgr="7${sgr:+;$sgr}"
+  if [[ -n $sgr ]]; then printf '\x1b[%sm%s\x1b[0m' "$sgr" "${TITLES[$idx]}"
+  else printf '%s' "${TITLES[$idx]}"; fi
 }
 # Repaint one visible title row (both cells + gutter + borders) without
 # wiping the sibling: clear once at row start, then write with no-EL moves.
@@ -442,20 +475,32 @@ paint_row() {
 # outer 2 cells stay normal-video gap, only the inner core reverses, so the
 # border length never changes with focus.
 sess_label() {
+  # Pure: prints outer medallion only. Cache the triple in load_medallion.
   local maxw nm
   if ((nsess > 1)); then
-    maxw=$((W - 34)); ((maxw < 4)) && maxw=4
+    maxw=$((W - SB_BORDER_PAD)); ((maxw < 4)) && maxw=4
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-    __SL_OUTER="  ←  $nm  →  "
-    __SL_INNER="←  $nm  →"
-    printf '%s' "$__SL_OUTER"
+    printf '  ←  %s  →  ' "$nm"
   else
-    maxw=$((W - 28)); ((maxw < 4)) && maxw=4
+    maxw=$((W - SB_SINGLE_PAD)); ((maxw < 4)) && maxw=4
     nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-    __SL_OUTER="  $nm  "
-    __SL_INNER="$nm"
-    printf '%s' "$__SL_OUTER"
+    printf '  %s  ' "$nm"
   fi
+}
+# Inner (focus-reversed) medallion core: outer minus its 2-cell padding.
+med_inner() { printf '%s' "${1:2:${#1} - 4}"; }
+# Fault the viewed session's medallion triple (outer, inner, visible width)
+# into SESS_MED[sid]; byte path avoids inner/width recompute per draw.
+load_medallion() {
+  local sid=${SESS_IDS[$sess]} outer inner mlen
+  [[ -n ${SESS_MED[$sid]+_} ]] && return 0
+  outer=$(sess_label); inner=$(med_inner "$outer")
+  mlen=$(vwidth "$outer")
+  SESS_MED[$sid]="$outer"$'\x1f'"$inner"$'\x1f'"$mlen"
+}
+# Split the SESS_MED[sid] triple into sbar/sinner/sblen globals.
+split_medallion() {
+  IFS=$'\x1f' read -r sbar sinner sblen <<<"${SESS_MED[${SESS_IDS[$sess]}]}"
 }
 # Footer is the contract: every working key for the current focus is listed,
 # nothing unlisted works. Grid rows show window ops only (c = window,
@@ -467,6 +512,28 @@ footext() {
     if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
     else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
   else printf '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window · X kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+}
+# Render the footer row: truncate footext() to canvas width. The footer is
+# near-ASCII, so skip the python truncation spawn when it already fits.
+paint_footer() {
+  local text fw
+  text=$(footext)
+  if ((${#text} <= W)) && [[ $text != *$'\x1b'* ]]; then
+    fw=$(vwidth "$text")
+    if ((fw <= W)); then put $((H - 1)) 0 "$text"$'\n'; return 0; fi
+  fi
+  put $((H - 1)) 0 "$(printf '%s' "$text" | trunc "$W")"
+}
+# Same truncation for the same-page repaint path, which writes straight to
+# the tty (FRAME is only flushed in draw()).
+trunc_footer_direct() {
+  local text fw
+  text=$(cat)
+  if ((${#text} <= W)) && [[ $text != *$'\x1b'* ]]; then
+    fw=$(vwidth "$text")
+    if ((fw <= W)); then printf '%s' "$text"; return 0; fi
+  fi
+  printf '%s' "$text" | trunc "$W" | tr -d '\n'
 }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
@@ -500,27 +567,31 @@ hborder() {
 # Gutter verticals (outer borders + mid divider with medallion notch).
 # Called once before the mid row; the post-cell restore stays inline after
 # paint_cells (EL-then-restore dance preserved for byte-identical output).
+# Both share occ() (visible-cell occupancy by 0..3 position) so the frame
+# halves cannot desync.
+occ() { (( top + $1 < send )); }
 paint_gutters() {
-  local y
+  local y b2o=0 b3o=0
+  occ 2 && b2o=1; occ 3 && b3o=1
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      if (( top < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-      if (( top + 1 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
+      if occ 0; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+      if occ 1; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
     else
-      if (( top + 2 < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-      if (( top + 3 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
+      if occ 2; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+      if occ 3; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
     fi
   done
-  hborder "$bot_y" '╰' '╯' "$b2" "$b3" '┴' '╯' '╰'
+  hborder "$bot_y" '╰' '╯' "$b2o" "$b3o" '┴' '╯' '╰'
   for ((y = 1; y <= bot_y - 1; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
       # Notch the divider where it passes under the session medallion,
       # so the column border never touches the session name.
-      if (( top < send || top + 1 < send )) && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+      if { occ 0 || occ 1; } && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
     else
-      if (( top + 2 < send || top + 3 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+      if occ 2 || occ 3; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
     fi
   done
 }
@@ -547,39 +618,36 @@ paint_cells() {
   done
 }
 draw() {
-  local b0 b1 b2 b3 seg x y r c idx coff roff l sbar sbx sblen lines
+  local b seg x y r c idx coff roff l sbar sinner sblen sbx lines
+  local -a occ4
   ensure_visible
   if [[ -z ${DREW:-} ]]; then DREW=1; prof "ready n=$n"; fi
   FRAME=$'\x1b[?25l'
   # Arm-aware frame: same geometry/sizes; each junction picks the glyph
-  # matching its present arms (b0..b3 = visible occupancy of the 4 cells),
+  # matching its present arms (occ4[0..3] = visible occupancy of the 4 cells),
   # so edges close with corners instead of dangling tees/crosses.
   # Bounds are the visible session's [top, send), never the global list.
-  (( top < send )) && b0=1 || b0=0
-  (( top + 1 < send )) && b1=1 || b1=0
-  (( top + 2 < send )) && b2=1 || b2=0
-  (( top + 3 < send )) && b3=1 || b3=0
-  hborder 0 '╭' '╮' "$b0" "$b1" '┬' '╮' '╭'
+  for ((b = 0; b < 4; b++)); do occ4[$b]=0; occ "$b" && occ4[$b]=1; done
+  hborder 0 '╭' '╮' "${occ4[0]}" "${occ4[1]}" '┬' '╮' '╭'
   nput 0 2 ' Windows '
-  [[ -n ${SESS_MED[${SESS_IDS[$sess]}]+_} ]] || { sess_label >/dev/null; SESS_MED[${SESS_IDS[$sess]}]=$__SL_OUTER; SESS_INNER[${SESS_IDS[$sess]}]=$__SL_INNER; SESS_MEDW[${SESS_IDS[$sess]}]=$(printf '%s' "$__SL_OUTER" | python3 -c "$VW_PY"); }
-  sbar=${SESS_MED[${SESS_IDS[$sess]}]}; sblen=${SESS_MEDW[${SESS_IDS[$sess]}]}; sbx=$(((W - sblen) / 2)); ((sbx < 12)) && sbx=12
+  load_medallion; split_medallion
+  sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=SB_MIN_X
   if (( sbx + sblen > W - 1 )); then sbx=$((W - 1 - sblen)); fi
   if (( sbx < 1 )); then sbx=1; sbar=$(printf '%s' "$sbar" | trunc "$((W - 2))"); sblen=$((W - 2)); fi
   if ((bar)); then
     # Same footprint focused or not: outer 2 stay normal-video gap, only the
     # inner core reverses, so the border length never changes with focus.
-    local inner=${SESS_INNER[${SESS_IDS[$sess]}]}
-    printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$inner"
+    printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$sinner"
   fi
   nput 0 "$sbx" "$sbar"
   paint_gutters
-  if (( b0 && b2 )); then seg='├'
-  elif (( b0 )); then seg='╰'
-  elif (( b2 )); then seg='╭'
+  if (( occ4[0] && occ4[2] )); then seg='├'
+  elif (( occ4[0] )); then seg='╰'
+  elif (( occ4[2] )); then seg='╭'
   else seg=' '; fi
   for ((x = 1; x <= W - 2; x++)); do
     if ((x == vx)); then
-      l=$(( b0 || b2 )); r=$(( b1 || b3 )); u=$(( b0 || b1 )); d=$(( b2 || b3 ))
+      l=$(( occ4[0] || occ4[2] )); r=$(( occ4[1] || occ4[3] )); u=$(( occ4[0] || occ4[1] )); d=$(( occ4[2] || occ4[3] ))
       if (( l && r && u && d )); then seg+='┼'
       elif (( l && r && u )); then seg+='┴'
       elif (( l && r && d )); then seg+='┬'
@@ -595,14 +663,14 @@ draw() {
       elif (( u || d )); then seg+='│'
       else seg+=' '; fi
     elif ((x < vx)); then
-      if (( b0 || b2 )); then seg+='─'; else seg+=' '; fi
+      if (( occ4[0] || occ4[2] )); then seg+='─'; else seg+=' '; fi
     else
-      if (( b1 || b3 )); then seg+='─'; else seg+=' '; fi
+      if (( occ4[1] || occ4[3] )); then seg+='─'; else seg+=' '; fi
     fi
   done
-  if (( b1 && b3 )); then seg+='┤'
-  elif (( b1 )); then seg+='╯'
-  elif (( b3 )); then seg+='╮'
+  if (( occ4[1] && occ4[3] )); then seg+='┤'
+  elif (( occ4[1] )); then seg+='╯'
+  elif (( occ4[3] )); then seg+='╮'
   else seg+=' '; fi
   put "$mid_y" 0 "$seg"
   paint_cells
@@ -613,18 +681,38 @@ draw() {
     for ((l = 0; l < band_h; l++)); do
       y=$((roff + l))
       if ((r == 0)); then
-        if (( top < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-        if (( top < send || top + 1 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
-        if (( top + 1 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
+        if occ 0; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+        if occ 0 || occ 1; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+        if occ 1; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
       else
-        if (( top + 2 < send )); then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-        if (( top + 2 < send || top + 3 < send )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
-        if (( top + 3 < send )); then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
+        if occ 2; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
+        if occ 2 || occ 3; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+        if occ 3; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
       fi
     done
   done
-  put $((H - 1)) 0 "$(footext | trunc "$W")"
+  paint_footer
   printf '%s' "$FRAME"
+}
+
+# Shared arrow/WASD navigation. Return 0 when sel may have changed and the
+# caller should repaint; return 1 when fully handled (full draw done or no-op).
+nav_up() {
+  if ((bar)); then return 1
+  elif ((sel >= s0 + COLS)); then sel=$((sel - COLS)); return 0
+  else bar=1; draw; return 1; fi
+}
+nav_down() {
+  if ((bar)); then bar=0; draw; return 1
+  else move_down; return 0; fi
+}
+nav_left() {
+  if ((bar)); then switch_sess -1; return 1
+  else ((sel > s0)) && sel=$((sel - 1)); return 0; fi
+}
+nav_right() {
+  if ((bar)); then switch_sess 1; return 1
+  else ((sel + 1 < send)) && sel=$((sel + 1)); return 0; fi
 }
 
 move_down() {
@@ -652,17 +740,17 @@ local prev k b d j
 draw
 while IFS= read -rsn1 k; do
   prev=$sel
-  if [[ -n ${CONFIRM_SID:-} ]]; then
+  if ((confirm_armed)); then
     if [[ $k == $'\x1b' ]]; then
       # Consume the rest of any escape sequence so its bytes don't
       # reprocess as nav keys; lone Esc aborts instead of quitting.
-      IFS= read -rsn1 -t 0.25 b || { CONFIRM_SID=""; draw; continue; }
+      IFS= read -rsn1 -t 0.25 b || { confirm_armed=0; draw; continue; }
       if [[ $b == '[' ]]; then IFS= read -rsn1 -t 0.25 d || true; fi
-      CONFIRM_SID=""; draw; continue
+      confirm_armed=0; draw; continue
     elif [[ $k == [yY] ]]; then
-      CONFIRM_SID=""; do_kill_session; continue
+      confirm_armed=0; do_kill_session; continue
     else
-      CONFIRM_SID=""; draw; continue
+      confirm_armed=0; draw; continue
     fi
   fi
   if [[ $k == $'\x1b' ]]; then
@@ -671,15 +759,10 @@ while IFS= read -rsn1 k; do
     IFS= read -rsn1 -t 0.25 d || continue
     case $d in
       [0-9]) while [[ $d != [A-Za-z~] ]]; do IFS= read -rsn1 -t 0.05 d || break; done; continue ;;
-      A) if ((bar)); then continue
-         elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-         else bar=1; draw; continue; fi ;;
-      B) if ((bar)); then bar=0; draw; continue
-         else move_down; fi ;;
-      C) if ((bar)); then switch_sess 1; continue
-         else ((sel + 1 < send)) && sel=$((sel + 1)); fi ;;
-      D) if ((bar)); then switch_sess -1; continue
-         else ((sel > s0)) && sel=$((sel - 1)); fi ;;
+      A) nav_up || continue ;;
+      B) nav_down || continue ;;
+      C) nav_right || continue ;;
+      D) nav_left || continue ;;
       *) continue ;;
     esac
   elif [[ -z $k || $k == $'\n' ]]; then
@@ -695,24 +778,15 @@ while IFS= read -rsn1 k; do
         break
       fi
     done
-  # WASD mirrors arrows: keep bodies in sync (future changes must update both).
+  # WASD shares the nav_* helpers with the arrow keys (single source).
   elif [[ $k == [wW] ]]; then
-    # mirror of arrow Up above
-    if ((bar)); then continue
-    elif ((sel >= s0 + COLS)); then sel=$((sel - COLS))
-    else bar=1; draw; continue; fi
+    nav_up || continue
   elif [[ $k == [sS] ]]; then
-    # mirror of arrow Down above
-    if ((bar)); then bar=0; draw; continue
-    else move_down; fi
+    nav_down || continue
   elif [[ $k == [aA] ]]; then
-    # mirror of arrow Left above
-    if ((bar)); then switch_sess -1; continue
-    else ((sel > s0)) && sel=$((sel - 1)); fi
+    nav_left || continue
   elif [[ $k == [dD] ]]; then
-    # mirror of arrow Right above
-    if ((bar)); then switch_sess 1; continue
-    else ((sel + 1 < send)) && sel=$((sel + 1)); fi
+    nav_right || continue
   elif [[ $k == [cC] ]]; then
     (( bar )) && continue
     do_new_window; continue
@@ -733,9 +807,9 @@ while IFS= read -rsn1 k; do
     # Explicit refresh: drop all cached captures/medallions so pane content
     # and renamed sessions fault in fresh (c/X reuse the cache on purpose).
     # Lowercase only: R is rename (visible in both footers).
-    SNAP=(); SESS_MED=(); SESS_MEDW=(); SESS_INNER=()
-    if ((bar)); then refresh_keep_off_bar "${SESS_IDS[$sess]}"
-    else refresh_keep_id "${SESS_IDS[$sess]}" "${IDS[$sel]}"; fi
+    SNAP=(); SESS_MED=()
+    if ((bar)); then refresh_to sid="${SESS_IDS[$sess]}" bar=1
+    else refresh_to sid="${SESS_IDS[$sess]}" wid="${IDS[$sel]}"; fi
     continue
   elif [[ $k == R ]]; then
     # Rename: window on grid focus, session on bar focus. Empty keeps old.
@@ -754,7 +828,7 @@ while IFS= read -rsn1 k; do
       paint_row $(((sel - top) / COLS))
     fi
     # Direct write (not put): FRAME is only flushed in draw().
-    at $((H - 1)) 0; printf '%s' "$(footext | trunc "$W")"
+    at $((H - 1)) 0; footext | trunc_footer_direct
   else
     while ((sel < top)); do top=$((top - COLS)); done
     while ((sel > top + COLS * VROWS - 1)); do top=$((top + COLS)); done

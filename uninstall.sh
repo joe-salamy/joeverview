@@ -21,8 +21,12 @@ done
 
 if [ -f "$TMUX_CONF" ] && grep -qF "joeverview.conf" "$TMUX_CONF"; then
   cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
-  grep -vF "joeverview.conf" "$TMUX_CONF" > "$TMUX_CONF.tmp" && mv "$TMUX_CONF.tmp" "$TMUX_CONF"
-  echo "unwired source-file from $TMUX_CONF"
+  awk '
+    /joeverview\.conf/ { next }
+    /^# superseded by joeverview \(see source-file below\): / { sub(/^# superseded by joeverview \(see source-file below\): /, ""); print; next }
+    { print }
+  ' "$TMUX_CONF" > "$TMUX_CONF.tmp" && mv "$TMUX_CONF.tmp" "$TMUX_CONF"
+  echo "unwired source-file from $TMUX_CONF (restored superseded binds)"
 else
   echo "nothing wired in $TMUX_CONF, skipping edit"
 fi

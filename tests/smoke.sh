@@ -15,11 +15,13 @@ for s in tmux-window-picker tmux-content-search; do
   fi
 done
 
-KEYS="$(tmux -L joeverview-smoke -f "$HOME/.tmux.conf" new-session -d -x 172 -y 41 \; list-keys \; kill-server 2>/dev/null)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/jv-smoke.XXXXXX")"
+trap 'rm -rf "$T"' EXIT
+SMOKE_CONF="$T/smoke-tmux.conf"
+printf 'source-file "%s"\n' "$REPO/tmux/joeverview.conf" > "$SMOKE_CONF"
+KEYS="$(tmux -L joeverview-smoke -f "$SMOKE_CONF" new-session -d -x 172 -y 41 \; list-keys \; kill-server 2>/dev/null)"
 echo "$KEYS" | grep -qE 'bind-key +-T prefix +o +.*display-popup +-BE?.*tmux-window-picker' \
   && echo "OK   prefix o (borderless grid)" || { echo "FAIL prefix o"; fail=1; }
-echo "$KEYS" | grep -qE 'tmux-pane-picker' \
-  && { echo "FAIL prefix O still bound"; fail=1; } || echo "OK   prefix O removed"
 echo "$KEYS" | grep -qE 'bind-key +-T prefix +/ +.*tmux-content-search' \
   && echo "OK   prefix /" || { echo "FAIL prefix /"; fail=1; }
 

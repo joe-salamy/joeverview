@@ -2,13 +2,14 @@
 # Fuzzy search pane scrollback contents across all windows/sessions, jump to the match.
 # Bound to `prefix /` via display-popup. Enter=jumps to the pane holding the
 # line (switching session/window as needed), Ctrl-Y=yanks the line to the tmux buffer.
-# Searches names AND contents (prefix w searches names only).
+# Searches scrollback contents with session:window context per row.
 # Rows are keyed by stable #{pane_id} (%id): bare `W.P` targets can collide
 # with session names, so every -t uses the %id before the first separator.
 # Fields use \x1f (never in terminal output) so colons/tabs in content are safe;
 # field 1 is %id (hidden via --with-nth), field 2 is session:window context,
 # field 3 is the matched line.
 set -u
+command -v fzf >/dev/null 2>&1 || { echo "tmux-content-search needs fzf" >&2; exit 1; }
 LINES=500
 SEP=$'\x1f'
 # fzf preview stays sed (grid uses python; preview must stay fast) — do not unify into python.
