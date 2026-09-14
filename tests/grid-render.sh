@@ -36,16 +36,6 @@ case "$cmd" in
     cat "$FIXDIR/sessions"
     ;;
   list-windows)
-    # Idle alert poll uses list-windows -a (one call, all sessions):
-    # serve the dynamic windows_poll file when present, else derive
-    # wid→flag pairs from the fixture rows (fields 1 and 7 — the same
-    # shape as the poll's -F "wid<TAB>flags" so extra fields never leak
-    # into ALERTS and cause phantom repaints).
-    if [[ " $* " == *" -a "* ]]; then
-      if [[ -f "$FIXDIR/windows_poll" ]]; then cat "$FIXDIR/windows_poll"
-      else awk -F'	' '{print $1"	"$7}' "$FIXDIR"/windows_*
-      fi
-    fi
     sid=""; prev=""
     for a in "$@"; do
       if [[ $prev == "-t" ]]; then sid=$a; fi
@@ -351,30 +341,6 @@ cmp -s "$T/out-u" "$FIXBASE/golden-mid70x20-six.out" || fail "golden-mid70x20 di
 grep -qF '\x1b' "$T/out-u" && fail "literal-x1b in out-u"
 bounds_check "$T/out-u" 20 70
 grep -qF "$(printf '\x1b[7m[1]')" "$T/out-u" || fail "mid70x20 arrow-move select"
-
-# (v) mid-open bell: pipe stays open across sleeps (no EOF), the poll file
-# lands mid-session, the idle poll must repaint @w1's title bold-red
-# without any keypress before q arrives.
-VDYN="$T/dyn-v"; mkdir -p "$VDYN"
-cp "$FIXBASE/n2/sessions" "$VDYN/sessions"
-cp "$FIXBASE/n2/windows_s0" "$VDYN/windows_s0"
-RED=$(printf '\x1b[1;31m[1]')
-RV=$(mktemp -d "$T/run-v.XXXXXX"); mk_stub "$RV"; : > "$RV/err-v"
-( sleep 1.5; printf '@w0\t\n@w1\tB\n' > "$VDYN/windows_poll"; sleep 1.5; printf 'q' ) |
-  FIXDIR="$VDYN" CALL_LOG=/dev/null PATH="$RV/bin:$PATH" \
-  bash "$REPO/bin/tmux-window-picker" > "$T/out-v" 2>"$RV/err-v"
-grep -qF "$RED" "$T/out-v" || fail "live-bell never painted red"
-tail -c 8192 "$T/out-v" | grep -qF "$RED" || fail "live-bell tail not red"
-grep -qF '\x1b' "$T/out-v" && fail "literal-x1b in out-v"
-# (v2) same session length, no poll file ever: nothing repaints red
-V2DYN="$T/dyn-v2"; mkdir -p "$V2DYN"
-cp "$FIXBASE/n2/sessions" "$V2DYN/sessions"
-cp "$FIXBASE/n2/windows_s0" "$V2DYN/windows_s0"
-RV2=$(mktemp -d "$T/run-v2.XXXXXX"); mk_stub "$RV2"; : > "$RV2/err-v2"
-( sleep 3; printf 'q' ) |
-  FIXDIR="$V2DYN" CALL_LOG=/dev/null PATH="$RV2/bin:$PATH" \
-  bash "$REPO/bin/tmux-window-picker" > "$T/out-v2" 2>"$RV2/err-v2"
-grep -qF "$RED" "$T/out-v2" && fail "idle poll phantom red"
 
 # (b) again over scenario outputs
 for f in "$T"/out-*; do

@@ -32,7 +32,7 @@ Quoting trap that bit: `'\x1b[K'` in single quotes emits literal text — escape
 
 ## Alert colors
 
-Titles carry a launch-time `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` snapshot: bell = bold red, activity = bold yellow, reverse folded in when selected. The main loop re-polls just those flags every 0.5 s of input idle (`list-windows -a`, wid→flag compare, full `draw` only on a delta) so a bell in a background window turns its title red with no keypress — the user can sit on the overview and respond to reds. Membership changes (new/killed windows) are ignored by the poll and still need `r`. `monitor-activity` is off by default, so yellow never fires until `setw -g monitor-activity on`; bell red works with stock `monitor-bell on`.
+Titles carry a launch-time `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` snapshot: bell = bold red, activity = bold yellow, reverse folded in when selected. `monitor-activity` is off by default, so yellow never fires until `setw -g monitor-activity on`; bell red works with stock `monitor-bell on`.
 
 ## Session pager + pane badge
 

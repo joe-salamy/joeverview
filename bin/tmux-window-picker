@@ -216,29 +216,6 @@ refresh_to() {
 }
 refresh_keep_id() { refresh_to "${1:-}" "${2:-}" 0; }
 refresh_keep_off_bar() { refresh_to "${1:-}" "" 1 "${2:-}"; }
-# Live bell/activity poll: re-read only the alert flags and repaint titles
-# whose flags changed while the overview sits idle (the full load_data
-# snapshot would otherwise stay stale until r/reopen — e.g. a bell in a
-# background window must turn its title red with no keypress, so the user
-# can sit on the overview and respond to reds). Unknown window IDs
-# (out-of-band create) and dead IDs are ignored — membership changes still
-# need r. State updates even while the kill confirm owns the footer, but
-# the repaint waits so the prompt bytes are never clobbered.
-check_alerts() {
-  local wid alert k changed=0
-  while IFS=$'	' read -r wid alert; do
-    [[ -n ${wid:-} ]] || continue
-    for ((k = 0; k < n; k++)); do
-      if [[ ${IDS[$k]} == "$wid" ]]; then
-        if [[ ${ALERTS[$k]} != "${alert:-}" ]]; then ALERTS[$k]=${alert:-}; changed=1; fi
-        break
-      fi
-    done
-  done < <(tmux list-windows -a -F "#{window_id}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}" 2>/dev/null)
-  (( changed )) || return 0
-  [[ -n ${CONFIRM_SID:-} ]] && return 0
-  draw
-}
 # New window in the viewed session, starting in the selected cell's
 # directory; grid cursor lands on it. Created detached (-d) so the
 # underlying client keeps its window — overview stays open. Falls back
@@ -671,20 +648,9 @@ jump_win() {
 }
 
 main() {
-local prev k b d j rc
+local prev k b d j
 draw
-while true; do
-  # -t poll: rc>128 = idle timeout (poll flags), anything else = EOF/closed
-  # stdin, which must still quit (piped-input goldens feed q then EOF, and a
-  # dead popup tty must not spin the tmux query forever).
-  if IFS= read -rsn1 -t 0.5 k; then
-    : # key in $k, fall through to dispatch
-  else
-    rc=$?
-    (( rc > 128 )) || break
-    check_alerts
-    continue
-  fi
+while IFS= read -rsn1 k; do
   prev=$sel
   if [[ -n ${CONFIRM_SID:-} ]]; then
     if [[ $k == $'\x1b' ]]; then
