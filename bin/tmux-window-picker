@@ -87,17 +87,24 @@ else:
     texts = [t for _, t in rows]
 sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
 trunc() { python3 -c "$PY" "$@"; }
+# Width-1 non-ASCII literals this script measures (frame, arrows, footer).
+# Each is east_asian_width A/N + combining 0, so visible width is 1. vwidth
+# folds them to 'x' and measures pure bash when nothing else non-ASCII
+# remains; anything else (tmux-supplied text) falls back to python, so a
+# literal missing here costs a spawn but never mismeasures.
+W1='←→↑↓·⧉│─╭╮╰╯┬┴┼┤├'
 # Visible width of one line (same east_asian_width rule as PY def vw):
-# strip SGR, count wide→2, combining→0. Footer/prompt fast path avoids a
-# python spawn for plain ASCII, which is the common case.
+# strip SGR, count wide→2, combining→0. Script-generated strings (footer,
+# medallion with an ASCII session name, rename prompt) take the pure-bash
+# path; only tmux-supplied wide text spawns python.
 vwidth() {
-  local s=$1 bare
+  local s=$1 folded
   case $s in
     *$'\x1b'*) printf '%s' "$s" | python3 -c "$VW_PY" ;;
     *)
-      bare=$s
-      if ((${#bare} == $(LC_ALL=C printf '%s' "$bare" | wc -c))); then printf '%s' "${#bare}"
-      else printf '%s' "$bare" | python3 -c "$VW_PY"; fi ;;
+      folded=${s//[$W1]/x}
+      if [[ $folded != *[![:ascii:]]* ]]; then printf '%s' "${#folded}"
+      else printf '%s' "$s" | python3 -c "$VW_PY"; fi ;;
   esac
 }
 # keep in sync with PY def vw — same width rule (wide→2, combining→0).
@@ -137,7 +144,9 @@ declare -A SNAP SESS_MED
 # Returns 1 when no windows remain.
 load_data() {
   local sid sname wid widx wname wtitle wpath panes alert suffix c k old_nsess idx
+  local wsid row
   local -A seen sess_seen old_names
+  local -a WINROWS
   old_nsess=${nsess:-0}
   # shellcheck disable=SC2199 # [@]+x is an emptiness probe, never expanded
   if [[ -n ${SESS_IDS[@]+x} ]] && (( old_nsess > 0 )); then
@@ -150,9 +159,23 @@ load_data() {
   while IFS=$'\t' read -r sid sname; do
     SESS_IDS[$nsess]=$sid
     SESS_NAMES[$nsess]=$sname
-    SESS_START[$nsess]=$idx
+    sess_seen[$sid]=1
+    nsess=$((nsess + 1))
+  done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
+  # One batched list-windows -a for all sessions (was one list-windows per
+  # session: 1+nsess tmux round-trips on every open/refresh). Rows regroup
+  # below in list-sessions order, whatever order tmux returns; windows from
+  # sessions born after list-sessions are skipped until the next refresh.
+  # The bell/activity flag field stays last: read with IFS tab drops a
+  # trailing empty field, so nothing significant may follow it.
+  mapfile -t WINROWS < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+  for ((k = 0; k < nsess; k++)); do
+    sid=${SESS_IDS[$k]}
+    SESS_START[$k]=$idx
     c=0
-    while IFS=$'\t' read -r wid widx wname wtitle wpath panes alert; do
+    for row in ${WINROWS[@]+"${WINROWS[@]}"}; do
+      IFS=$'\t' read -r wsid wid widx wname wtitle wpath panes alert <<<"$row"
+      [[ $wsid == "$sid" ]] || continue
       IDS[$idx]=$wid
       WIDX[$idx]=$widx
       ALERTS[$idx]=$alert
@@ -162,11 +185,9 @@ load_data() {
       if ((panes > 1)); then suffix=" ⧉ $panes"; fi
       RAW_TITLES[$idx]="[$widx] $wname │ $wtitle │ $wpath$suffix"
       idx=$((idx + 1)); c=$((c + 1))
-    done < <(tmux list-windows -t "$sid" -F "#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
-    SESS_COUNT[$nsess]=$c
-    sess_seen[$sid]=1
-    nsess=$((nsess + 1))
-  done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
+    done
+    SESS_COUNT[$k]=$c
+  done
   n=$idx
   [ "$n" -eq 0 ] && return 1
   # Drop snapshots for dead IDs; survivors keep their cache so

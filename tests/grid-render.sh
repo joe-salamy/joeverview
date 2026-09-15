@@ -36,13 +36,24 @@ case "$cmd" in
     cat "$FIXDIR/sessions"
     ;;
   list-windows)
-    sid=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
-    key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-    cat "$FIXDIR/windows_$key"
+    if [[ " $* " == *" -a "* ]]; then
+      # Batched query: prefix each session's fixture rows with its sid, in
+      # sessions-file order like tmux groups list-windows -a. IFS= keeps
+      # the trailing empty alert field byte-identical to the -t path.
+      while IFS=$'\t' read -r sid _rest; do
+        key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+        [[ -f "$FIXDIR/windows_$key" ]] || continue
+        while IFS= read -r line; do printf '%s\t%s\n' "$sid" "$line"; done < "$FIXDIR/windows_$key"
+      done < "$FIXDIR/sessions"
+    else
+      sid=""; prev=""
+      for a in "$@"; do
+        if [[ $prev == "-t" ]]; then sid=$a; fi
+        prev=$a
+      done
+      key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
+      cat "$FIXDIR/windows_$key"
+    fi
     ;;
   capture-pane)
     if [[ -n ${CAP_EMPTY:-} ]]; then printf ''; exit 0; fi

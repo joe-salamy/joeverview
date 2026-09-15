@@ -14,7 +14,7 @@ showed the active window's content for unvisited windows. Indexes also shift und
 
 ## Snapshot grid, not a live mirror
 
-`prefix o` reads window metadata at launch (`list-sessions` + per-session `list-windows`), truncates
+`prefix o` reads window metadata at launch (`list-sessions` + one batched `list-windows -a`), truncates
 all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t
 @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in
 synchronously. `r` (or reopen) refreshes after out-of-band changes — there is no way to mirror live
@@ -61,7 +61,7 @@ default, so yellow never fires until `setw -g monitor-activity on`; bell red wor
 
 ## Session pager + pane badge
 
-`prefix o` shows one session at a time (`list-sessions`, then per-session `list-windows -t $sid`).
+`prefix o` shows one session at a time (`list-sessions` + batched `list-windows -a`, regrouped in session order).
 The switcher (`← name →`) is stamped into the existing top border next to ` Windows `, so grid
 geometry and the arm-aware frame (junctions close with corners) are unchanged; bounds just narrow
 from global `n` to the visible session's `[s0, send)`. Up from the top grid row focuses the bar
