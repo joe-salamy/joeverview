@@ -8,8 +8,10 @@
 #     window_id so survivors keep captures across refreshes; SESS_MED medallion
 #     cache keyed by session_id (value "outer"$'\x1f'"inner"$'\x1f'"width");
 #     sel/sess/top/bar hold cursor/session/page/focus.
-#   LOAD: load_data() re-reads metadata and GCs dead IDs; ensure_visible() faults
-#     only the missing visible cells in via load_cell. Titles truncate in one
+#   LOAD: load_data() re-reads metadata and GCs dead IDs; fault_visible()
+#     faults titles (when TITLES_DIRTY) + missing visible captures +
+#     medallion name in one batch_trunc() pass (raw captures in parallel),
+#     so a cold open costs one interpreter spawn + ~1 tmux RTT for captures.
 #   PAINT: draw() is the only full repaint (buffered into FRAME, one flush);
 #     paint_row() repaints a single title row for same-page moves. put/nput
 #     append cursor-addressed writes to FRAME (put clears to EOL first);
@@ -31,7 +33,8 @@ command -v python3 >/dev/null 2>&1 || { echo "tmux-window-picker needs python3" 
 # after load_data() flashes it for the whole load. Byte-identical to the old
 # late clear — emitted once, earlier — so render goldens are unaffected.
 saved_stty=$(stty -g 2>/dev/null || true)
-cleanup() { printf '%s' $'\x1b[?25h'; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; }
+JVTMP=$(mktemp -d "${TMPDIR:-/tmp}/jv.XXXXXX") || { echo "tmux-window-picker needs a temp dir" >&2; exit 1; }
+cleanup() { printf '%s' $'\x1b[?25h'; [[ -n ${JVTMP:-} ]] && rm -rf "$JVTMP"; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; }
 trap cleanup EXIT
 printf '\x1b[?25l\x1b[2J'
 stty -echo -icanon min 1 time 0 2>/dev/null
@@ -86,6 +89,82 @@ if keep is not None:
 else:
     texts = [t for _, t in rows]
 sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
+# Batch truncation for one fault: titles + missing visible captures +
+# medallion name in a single python spawn (argv: title_w cell_w snap_h medw
+# multi), raw captures fed in parallel so N cells cost ~1 tmux RTT, not N.
+# Framing: stdin is NUL-joined blocks (titles, one raw capture per missing
+# cell, medallion source name); stdout is NUL-joined blocks (titles, one
+# truncated capture per missing cell, medallion name + outer width). Python
+# never sees counts: every middle block is a capture, so bash indexes output
+# as BATCH[0]=titles, BATCH[1..nmiss]=captures, BATCH[1+nmiss]=medallion.
+# The medallion width is the arrow/name padding (10 multi / 4 single) plus
+# the name's visible width, computed where the width rule already lives.
+# Empty blocks stay empty: python emits a bare separator (no trailing
+# newline), so mapfile -d '' keeps blocks aligned and empty captures stay
+# unpinned exactly like trunc() does. Newlines split exactly like $PY's stdin
+# loop (one trailing newline adds no row; CR/CRLF normalize). Bytes: python
+# reads and writes UTF-8 with errors=replace so a stray byte never kills a
+# draw; NULs are stripped from raw captures (tr -d) since NUL separates blocks.
+# trunc_line/vw duplicate $PY — keep the two in sync.
+BATCHPY="import re, sys, unicodedata
+title_w, cell_w, snap_h, medw, multi = (int(a) for a in sys.argv[1:6])
+osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
+sgr = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+def vw(ch):
+    return 2 if unicodedata.east_asian_width(ch) in (\"W\",\"F\") else (0 if unicodedata.combining(ch) else 1)
+def trunc_line(line, w):
+    line = osc.sub('', line)
+    out = []
+    v = 0
+    saw = False
+    done = False
+    for tok in re.split(r'(\x1b\[[0-9;]*[A-Za-z])', line):
+        if done or not tok:
+            continue
+        if sgr.fullmatch(tok):
+            out.append(tok)
+            saw = True
+            continue
+        for ch in tok:
+            c = vw(ch)
+            if v + c > w:
+                done = True
+                break
+            out.append(ch)
+            v += c
+    if saw:
+        out.append('\x1b[0m')
+    while out and len(out[-1]) == 1 and out[-1] in ' \t':
+        out.pop()
+    return ''.join(out)
+def trunc_block(lines, w, keep=None):
+    rows = []
+    for raw in lines:
+        line = trunc_line(raw, w)
+        content = any(not ch.isspace() for ch in sgr.sub('', line))
+        rows.append((content, line))
+    if keep is not None:
+        texts = [t for c, t in rows if c][-keep:] if keep > 0 else []
+    else:
+        texts = [t for _, t in rows]
+    return texts
+def vwidth(s):
+    return sum(vw(c) for c in sgr.sub('', s))
+def lines_of(b):
+    # Same line splitting \$PY saw: text-mode stdin normalizes CRLF/CR to LF,
+    # then iterates lines (one trailing newline adds no phantom row).
+    t = b.decode('utf-8', 'replace').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    if t and t[-1] == '':
+        t.pop()
+    return t
+parts = sys.stdin.buffer.read().split(b'\x00')
+titles = trunc_block(lines_of(parts[0]), title_w)
+caps = [trunc_block(lines_of(p), cell_w, snap_h) for p in parts[1:-1]]
+med_src = lines_of(parts[-1])
+medname = trunc_line(med_src[0] if med_src else '', medw)
+med = medname + '\n' + str((10 if multi else 4) + vwidth(medname))
+sys.stdout.buffer.write(b'\x00'.join([('\n'.join(titles)).encode('utf-8')] + [('\n'.join(c)).encode('utf-8') for c in caps] + [med.encode('utf-8')]) + b'\x00')"
+batch_trunc() { python3 -c "$BATCHPY" "$@"; }
 trunc() { python3 -c "$PY" "$@"; }
 # Width-1 non-ASCII literals this script measures (frame, arrows, footer).
 # Each is east_asian_width A/N + combining 0, so visible width is 1. vwidth
@@ -132,10 +211,11 @@ mid_y=$((band_h + 3))
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
 declare -A SNAP SESS_MED
+TITLES_DIRTY=0
 # Rebuild session/window metadata from tmux. Snapshots (SNAP assoc only)
 # are keyed by stable window_id, so surviving cells keep their captures
-# across create/kill refreshes; only missing cells fault in via
-# ensure_visible(). Stale windows/sessions are garbage-collected here.
+# across create/kill refreshes; only the missing ones fault in via
+# fault_visible(). Stale windows/sessions are garbage-collected here.
 # SESS_MED[sid] is "outer"$'\x1f'"inner"$'\x1f'"width": arrow decoration and
 # max width depend on nsess>1, so every entry is dropped whenever the
 # session count or a session name changes (not just for dead IDs).
@@ -191,7 +271,7 @@ load_data() {
   n=$idx
   [ "$n" -eq 0 ] && return 1
   # Drop snapshots for dead IDs; survivors keep their cache so
-  # add/delete only captures the missing cells in ensure_visible().
+  # add/delete only captures the missing cells in fault_visible().
   # shellcheck disable=SC2199 # [@]+x is an emptiness probe, never expanded
   if [[ -n ${SNAP[@]+x} ]]; then
     for k in "${!SNAP[@]}"; do
@@ -217,9 +297,10 @@ load_data() {
       fi
     done
   fi
-  # Titles truncate in one python pass; snapshots fault in per visible page.
-  mapfile -t TITLES < <(printf '%s\n' "${RAW_TITLES[@]}" | trunc "$title_w")
-  RAW_TITLES=()
+  # Titles truncate in the fault_visible() batch, not here: batching needs
+  # top/sess (unknown until the caller reseats), and an r-refresh faults the
+  # new page's captures in the same spawn. TITLES_DIRTY=1 forces the fault.
+  TITLES_DIRTY=1
   prof "meta n=$n nsess=$nsess"
 }
 # Clamp top so sel sits on the visible page.
@@ -283,7 +364,7 @@ do_new_window() {
   else
     newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
   fi
-  # Window ids are unique: load_data GCs dead IDs and ensure_visible() faults
+  # Window ids are unique: load_data GCs dead IDs and fault_visible() faults
   # the new window in fresh.
   refresh_to sid="$target" wid="$newid"
 }
@@ -433,20 +514,79 @@ s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
 place_top
 # On-demand snapshots keyed by stable window_id: a present non-empty SNAP entry
 # is the loaded flag. Empty captures (fresh shell pre-paint) are never pinned
-# so later draws retry. draw() ensures its page, so scrolls and session
+# so later draws retry. draw() faults its page in one batch (titles when
+# TITLES_DIRTY, missing captures, medallion name), so scrolls and session
 # switches fault missing cells in synchronously, while add/delete refreshes
 # reuse surviving cells and capture only the new one.
-load_cell() {
-  local wid=${IDS[$1]} cap
-  (( snap_h <= 0 )) && return 0
-  [[ -n ${SNAP[$wid]:-} ]] && return 0
-  cap=$(tmux capture-pane -pe -t "$wid" 2>/dev/null | trunc "$cell_w" "$snap_h")
-  [[ -n $cap ]] && SNAP[$wid]=$cap || unset "SNAP[$wid]" 2>/dev/null || true
-}
-ensure_visible() {
-  local e=$((top + COLS * VROWS)) k
+# Raw captures run in parallel tmux round-trips into JVTMP files, then one
+# batch_trunc() pass truncates everything: N cells cost ~1 RTT + 1 spawn.
+# mapfile -d '' keeps empty blocks aligned (plain mapfile would drop a
+# trailing empty medallion). Subshells cannot write SNAP, so raw (not
+# truncated) captures stage through files. The footer stays out of the batch:
+# its char length pre-check (paint_footer) usually avoids a spawn, and a
+# per-row keypress path (trunc_footer_direct) must not pay a batch round-trip.
+fault_visible() {
+  local e=$((top + COLS * VROWS)) k wid key nmiss=0 bi
+  local -a MW=()
+  local -a BATCH=()
+  local medw med_src multi=0
   ((e > send)) && e=$send
-  for ((k = top; k < e; k++)); do load_cell "$k"; done
+  # snap_h<=0 (tiny canvas): no captures exist, so skip the scan; the batch
+  # below still runs when titles or the medallion are actually dirty.
+  if (( snap_h > 0 )); then
+    for ((k = top; k < e; k++)); do
+      wid=${IDS[$k]}
+      if [[ -z ${SNAP[$wid]:-} ]]; then
+        key=${wid//[!A-Za-z0-9_]/}
+        MW+=("$k:$key")
+      fi
+    done
+    nmiss=${#MW[@]}
+  fi
+  # The medallion rides the batch too: a dropped SESS_MED entry (rename,
+  # count change) must fault even when titles/captures are clean. The cache
+  # is checked inline here — the earlier load_medallion_cached callback form
+  # recursed with fault_visible forever, segfaulting test (p).
+  if (( TITLES_DIRTY == 0 && nmiss == 0 )) && [[ -n ${SESS_MED[${SESS_IDS[$sess]}]+_} ]]; then return 0; fi
+  if (( nsess > 1 )); then multi=1; medw=$((W - SB_BORDER_PAD)); else medw=$((W - SB_SINGLE_PAD)); fi
+  (( medw < 4 )) && medw=4
+  med_src=${SESS_NAMES[$sess]}
+  if (( nmiss > 0 )); then
+    for row in ${MW[@]+"${MW[@]}"}; do
+      k=${row%%:*}; key=${row#*:}
+      tmux capture-pane -pe -t "${IDS[$k]}" 2>/dev/null | tr -d '\0' >"$JVTMP/cap-$key" &
+    done
+    wait
+  fi
+  { printf '%s\n' "${RAW_TITLES[@]}"
+    for row in ${MW[@]+"${MW[@]}"}; do
+      key=${row#*:}
+      printf '\0'
+      if [[ -s $JVTMP/cap-$key ]]; then cat "$JVTMP/cap-$key"; fi
+    done
+    printf '\0%s' "$med_src"
+  } >"$JVTMP/in"
+  mapfile -d '' -t BATCH < <(batch_trunc "$title_w" "$cell_w" "$snap_h" "$medw" "$multi" <"$JVTMP/in")
+  if (( TITLES_DIRTY )); then
+    mapfile -t TITLES <<<"${BATCH[0]:-}"
+    TITLES_DIRTY=0
+  fi
+  bi=1
+  if (( nmiss > 0 )); then
+    for row in ${MW[@]+"${MW[@]}"}; do
+      k=${row%%:*}; key=${row#*:}
+      wid=${IDS[$k]}
+      if [[ -n ${BATCH[$bi]:-} ]]; then
+        SNAP[$wid]=${BATCH[$bi]}
+      else
+        unset "SNAP[$wid]" 2>/dev/null || true
+      fi
+      bi=$((bi + 1))
+      rm -f "$JVTMP/cap-$key"
+    done
+  fi
+  cache_medallion "${BATCH[$bi]:-}"
+  rm -f "$JVTMP/in"
 }
 bar=0
 confirm_armed=0
@@ -495,30 +635,20 @@ paint_row() {
 # ' Windows ' stamp and the corners. Focus keeps the same footprint: the
 # outer 2 cells stay normal-video gap, only the inner core reverses, so the
 # border length never changes with focus.
-sess_label() {
-  # Pure: prints outer medallion only. Cache the triple in load_medallion.
-  local maxw nm
-  if ((nsess > 1)); then
-    maxw=$((W - SB_BORDER_PAD)); ((maxw < 4)) && maxw=4
-    nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-    printf '  ←  %s  →  ' "$nm"
-  else
-    maxw=$((W - SB_SINGLE_PAD)); ((maxw < 4)) && maxw=4
-    nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
-    printf '  %s  ' "$nm"
-  fi
-}
+# Batch path: outer/inner assemble in pure bash from the batch-truncated name
+# below (same literals sess_label() used before batching); the batch already
+# measured the name width, so no vwidth spawn.
 # Inner (focus-reversed) medallion core: outer minus its 2-cell padding.
 med_inner() { printf '%s' "${1:2:${#1} - 4}"; }
-# Fault the viewed session's medallion triple (outer, inner, visible width)
-# into SESS_MED[sid]; byte path avoids inner/width recompute per draw.
-load_medallion() {
-  local sid=${SESS_IDS[$sess]} outer inner mlen
-  [[ -n ${SESS_MED[$sid]+_} ]] && return 0
-  outer=$(sess_label); inner=$(med_inner "$outer")
-  mlen=$(vwidth "$outer")
+cache_medallion() {
+  local sid=${SESS_IDS[$sess]} nm mlen outer inner
+  nm=${1%%$'\n'*}; mlen=${1#*$'\n'}
+  if (( nsess > 1 )); then outer="  ←  $nm  →  "; else outer="  $nm  "; fi
+  inner=${outer:2:${#outer} - 4}
   SESS_MED[$sid]="$outer"$'\x1f'"$inner"$'\x1f'"$mlen"
 }
+# The early return in fault_visible() covers the cache-hit path: a dropped
+# entry rides the batch, so no separate fault is needed.
 # Split the SESS_MED[sid] triple into sbar/sinner/sblen globals.
 split_medallion() {
   IFS=$'\x1f' read -r sbar sinner sblen <<<"${SESS_MED[${SESS_IDS[$sess]}]}"
@@ -641,7 +771,7 @@ paint_cells() {
 draw() {
   local b seg x y r c idx coff roff l sbar sinner sblen sbx lines
   local -a occ4
-  ensure_visible
+  fault_visible
   if [[ -z ${DREW:-} ]]; then DREW=1; prof "ready n=$n"; fi
   FRAME=$'\x1b[?25l'
   # Arm-aware frame: same geometry/sizes; each junction picks the glyph
@@ -651,7 +781,7 @@ draw() {
   for ((b = 0; b < 4; b++)); do occ4[$b]=0; occ "$b" && occ4[$b]=1; done
   hborder 0 '╭' '╮' "${occ4[0]}" "${occ4[1]}" '┬' '╮' '╭'
   nput 0 2 ' Windows '
-  load_medallion; split_medallion
+  split_medallion
   sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=SB_MIN_X
   if (( sbx + sblen > W - 1 )); then sbx=$((W - 1 - sblen)); fi
   if (( sbx < 1 )); then sbx=1; sbar=$(printf '%s' "$sbar" | trunc "$((W - 2))"); sblen=$((W - 2)); fi
