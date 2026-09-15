@@ -340,6 +340,20 @@ grep -qF '\x1b' "$T/out-u" && fail "literal-x1b in out-u"
 bounds_check "$T/out-u" 20 70
 grep -qF "$(printf '\x1b[7m[1]')" "$T/out-u" || fail "mid70x20 arrow-move select"
 
+# (v) wide canvas: footer fits, so paint_footer takes the python-skipping
+# fast path. Regression: the fast path appended $'\n' to the bottom-row
+# payload, scrolling the popup one line per full draw (top border and
+# session medallion lost at start, worse with every move). Narrow
+# harnesses never take the fast path, so assert zero raw newline/CR bytes
+# over the whole output — one per draw pre-fix — plus bounds + medallion.
+STUB_H=30 STUB_W=200 run_picker n1 'q' "$T/out-v"
+[ "$(tr -d -c '\n\r' < "$T/out-v" | wc -c)" -eq 0 ] || fail "wide q-only scrolled"
+bounds_check "$T/out-v" 30 200
+grep -qF 'main' "$T/out-v" || fail "wide medallion missing"
+STUB_H=30 STUB_W=200 run_picker n1 '\x1b[A\x1b[Bq' "$T/out-v2"
+[ "$(tr -d -c '\n\r' < "$T/out-v2" | wc -c)" -eq 0 ] || fail "wide moves scrolled"
+bounds_check "$T/out-v2" 30 200
+
 check_no_literal_esc "$T"/out-*
 
 echo "render: PASS"

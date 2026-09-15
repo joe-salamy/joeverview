@@ -520,7 +520,7 @@ paint_footer() {
   text=$(footext)
   if ((${#text} <= W)) && [[ $text != *$'\x1b'* ]]; then
     fw=$(vwidth "$text")
-    if ((fw <= W)); then put $((H - 1)) 0 "$text"$'\n'; return 0; fi
+    if ((fw <= W)); then put $((H - 1)) 0 "$text"; return 0; fi
   fi
   put $((H - 1)) 0 "$(printf '%s' "$text" | trunc "$W")"
 }
