@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # grid-render harness: stub-tmux golden + interaction checks for bin/tmux-window-picker.
+# Goldens are byte-exact; bless with UPDATE_GOLDEN=1 only after eyeballing the diff; never commit a bless alongside a behavior change.
+# UPDATE_GOLDEN=1 re-blesses all seven goldens (n1-n4, multi, small40x12-n2, mid70x20-six).
 # No live tmux server needed. Stub defaults to 30x60 geometry (cell_w=26,
 # title_w=24, band_h=10, snap_h=9, vx=29, bot_y=28, mid_y=13); STUB_H/STUB_W
 # in the environment override the stub canvas (small-geometry cases (t)/(u)).
@@ -22,6 +24,7 @@ mk_stub() {
 #!/usr/bin/env bash
 # Stub tmux for grid-render harness. Env: FIXDIR (fixture dir), CALL_LOG,
 # CAP_EMPTY, ON_NEW_WINDOW, ON_NEW_SESSION.
+get_t() { local prev="" t="" a; for a in "$@"; do if [[ $prev == "-t" ]]; then t=$a; fi; prev=$a; done; printf '%s' "$t"; }
 cmd=${1:-}; shift || true
 case "$cmd" in
   display-message)
@@ -46,22 +49,14 @@ case "$cmd" in
         while IFS= read -r line; do printf '%s\t%s\n' "$sid" "$line"; done < "$FIXDIR/windows_$key"
       done < "$FIXDIR/sessions"
     else
-      sid=""; prev=""
-      for a in "$@"; do
-        if [[ $prev == "-t" ]]; then sid=$a; fi
-        prev=$a
-      done
+      sid=$(get_t "$@")
       key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
       cat "$FIXDIR/windows_$key"
     fi
     ;;
   capture-pane)
     if [[ -n ${CAP_EMPTY:-} ]]; then printf ''; exit 0; fi
-    id=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then id=$a; fi
-      prev=$a
-    done
+    id=$(get_t "$@")
     key=$(printf '%s' "$id" | tr -cd 'A-Za-z0-9_')
     if [[ -f "$FIXDIR/cap_$key" ]]; then cat "$FIXDIR/cap_$key"
     else printf 'cap-%s-line1\ncap-%s-line2\n' "$id" "$id"
@@ -70,11 +65,7 @@ case "$cmd" in
   new-window)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     if [[ -n ${ON_NEW_WINDOW:-} && -f ${ON_NEW_WINDOW:-} ]]; then
-      sid=""; prev=""
-      for a in "$@"; do
-        if [[ $prev == "-t" ]]; then sid=$a; fi
-        prev=$a
-      done
+      sid=$(get_t "$@")
       key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
       grep -qF '@wnew' "$FIXDIR/windows_$key" 2>/dev/null || cat "$ON_NEW_WINDOW" >> "$FIXDIR/windows_$key"
     fi
@@ -89,20 +80,12 @@ case "$cmd" in
     ;;
   kill-session)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    tgt=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then tgt=$a; fi
-      prev=$a
-    done
+    tgt=$(get_t "$@")
     if [[ -n $tgt && -f "$FIXDIR/sessions" ]]; then grep -vF "$tgt" "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"; fi
     ;;
   rename-session)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
-    sid=""; new=""; prev=""
-    for a in "$@"; do
-      if [[ $prev == "-t" ]]; then sid=$a; fi
-      prev=$a
-    done
+    sid=$(get_t "$@")
     new="${@: -1}"
     if [[ -n $sid && -n $new && -f "$FIXDIR/sessions" ]]; then
       awk -v sid="$sid" -v new="$new" 'BEGIN{FS=OFS="\t"} $1==sid{$2=new} {print}' "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
@@ -132,6 +115,23 @@ run_picker() {
     "$input" "$REPO" "$out" "$r/err"
 }
 
+# run_dynamic <tag> <printf-%b-input> <outfile> <call_log> — dynamic-fixture
+# runner sharing run_picker's stub/env-run prelude. Caller prepares $T/dyn-<tag>
+# contents first; hook env (CUR_SID/CUR_WID/STUB_H/STUB_W/CAP_EMPTY/ON_NEW_*)
+# passes through like run_picker's callers set it inline.
+run_dynamic() {
+  local tag=$1 input=$2 out=$3 log=$4
+  local r
+  r=$(mktemp -d "$T/run-$tag.XXXXXX")
+  mk_stub "$r"
+  : > "$log"; : > "$r/err"
+  STUB_H="${STUB_H:-}" STUB_W="${STUB_W:-}" CUR_SID="${CUR_SID:-}" CUR_WID="${CUR_WID:-}" \
+  CAP_EMPTY="${CAP_EMPTY:-}" ON_NEW_WINDOW="${ON_NEW_WINDOW:-}" ON_NEW_SESSION="${ON_NEW_SESSION:-}" \
+  FIXDIR="$T/dyn-$tag" CALL_LOG="$log" PATH="$r/bin:$PATH" \
+    bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+    "$input" "$REPO" "$out" "$r/err"
+}
+
 # (a) q-only goldens for n1-n4 + multi
 for name in n1 n2 n3 n4 multi; do
   [[ -f "$FIXBASE/golden-$name.out" ]] || fail "golden-$name missing"
@@ -142,9 +142,8 @@ for name in n1 n2 n3 n4 multi; do
     cmp -s "$T/out-$name" "$FIXBASE/golden-$name.out" || fail "golden-$name diff"
   fi
 done
-
 check_no_literal_esc() { for f in "$@"; do grep -qF '\x1b' "$f" && fail "literal-x1b in $f"; done; }
-check_no_literal_esc "$T"/out-* "$FIXBASE"/golden-*.out
+
 
 # (c) n4 Right-arrow moves selection 0 -> 1 (tail = final repaint state)
 run_picker n4 '\x1b[Cq' "$T/out-c"
@@ -232,31 +231,23 @@ run_picker n2 '\x7fq' "$T/out-o" "$T/calls-o"
 grep -qF 'kill-window' "$T/calls-o" && fail "del killed"
 
 # (p) 1->2 sessions: first session gains arrows after N + paging back
-DYN="$T/dyn-p"; mkdir -p "$DYN"
-cp "$FIXBASE/n1/sessions" "$DYN/sessions"
-cp "$FIXBASE/n1/windows_s0" "$DYN/windows_s0"
-printf '@w9\t0\twin9\tt9\t/tmp/w9\t1\t\n' > "$DYN/windows_snew"
-printf '$snew\tsecond\n' > "$DYN/on_new_session"
-RP=$(mktemp -d "$T/run-p.XXXXXX"); mk_stub "$RP"
-: > "$T/calls-p"; : > "$RP/err"
-ON_NEW_SESSION="$DYN/on_new_session" FIXDIR="$DYN" CALL_LOG="$T/calls-p" PATH="$RP/bin:$PATH" \
-  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-  '\x1b[AN\x1b[Dq' "$REPO" "$T/out-p" "$RP/err"
+mkdir -p "$T/dyn-p"
+cp "$FIXBASE/n1/sessions" "$T/dyn-p/sessions"
+cp "$FIXBASE/n1/windows_s0" "$T/dyn-p/windows_s0"
+printf '@w9\t0\twin9\tt9\t/tmp/w9\t1\t\n' > "$T/dyn-p/windows_snew"
+printf '$snew\tsecond\n' > "$T/dyn-p/on_new_session"
+ON_NEW_SESSION="$T/dyn-p/on_new_session" run_dynamic p '\x1b[AN\x1b[Dq' "$T/out-p" "$T/calls-p"
 grep -qF 'new-session' "$T/calls-p" || fail "medallion-1to2 new-session"
 grep -qF '←  main  →' "$T/out-p" || fail "medallion-1to2 first-session-arrows"
 
 # (q) kill middle session from the bar: Up+X arms, y confirms; pre-switch,
 # then kill, land highlighted on C
-QYN="$T/dyn-q"; mkdir -p "$QYN"
-printf '$s0\tA\n$s1\tB\n$s2\tC\n' > "$QYN/sessions"
-printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$QYN/windows_s0"
-printf '@w1\t0\twin1\tt1\t/tmp/w1\t1\t\n' > "$QYN/windows_s1"
-printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$QYN/windows_s2"
-RQ=$(mktemp -d "$T/run-q.XXXXXX"); mk_stub "$RQ"
-: > "$T/calls-q"; : > "$RQ/err"
-CUR_SID='$s1' CUR_WID='@w1' STUB_W=140 FIXDIR="$QYN" CALL_LOG="$T/calls-q" PATH="$RQ/bin:$PATH" \
-  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-  '\x1b[AXyq' "$REPO" "$T/out-q" "$RQ/err"
+mkdir -p "$T/dyn-q"
+printf '$s0\tA\n$s1\tB\n$s2\tC\n' > "$T/dyn-q/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-q/windows_s0"
+printf '@w1\t0\twin1\tt1\t/tmp/w1\t1\t\n' > "$T/dyn-q/windows_s1"
+printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$T/dyn-q/windows_s2"
+CUR_SID='$s1' CUR_WID='@w1' STUB_W=140 run_dynamic q '\x1b[AXyq' "$T/out-q" "$T/calls-q"
 grep -qF 'switch-client -t $s2' "$T/calls-q" || fail "kill-preswitch target"
 grep -qF 'kill-session -t $s1' "$T/calls-q" || fail "kill-middle log"
 sw=$(grep -nF 'switch-client' "$T/calls-q" | head -1 | cut -d: -f1)
@@ -269,15 +260,11 @@ tail -c 8192 "$T/out-q" | grep -qF "$(printf '  \x1b[7m←  C  →\x1b[0m  ')" |
 tail -c 2048 "$T/out-q" | grep -qF 'session 2/2' || fail "kill-middle session footer"
 
 # (r) rename session from the bar: stay highlighted on the new name
-RYN="$T/dyn-r"; mkdir -p "$RYN"
-printf '$s0\tmain\n$s1\tother\n' > "$RYN/sessions"
-printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$RYN/windows_s0"
-printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$RYN/windows_s1"
-RR=$(mktemp -d "$T/run-r.XXXXXX"); mk_stub "$RR"
-: > "$T/calls-r"; : > "$RR/err"
-CUR_SID='$s0' CUR_WID='@w0' STUB_W=140 FIXDIR="$RYN" CALL_LOG="$T/calls-r" PATH="$RR/bin:$PATH" \
-  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-  '\x1b[ARnewname\nq' "$REPO" "$T/out-r" "$RR/err"
+mkdir -p "$T/dyn-r"
+printf '$s0\tmain\n$s1\tother\n' > "$T/dyn-r/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-r/windows_s0"
+printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$T/dyn-r/windows_s1"
+CUR_SID='$s0' CUR_WID='@w0' STUB_W=140 run_dynamic r '\x1b[ARnewname\nq' "$T/out-r" "$T/calls-r"
 grep -qF 'rename-session -t $s0 newname' "$T/calls-r" || fail "rename-session log"
 grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
 grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
@@ -287,31 +274,24 @@ tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
 
 # (s) create with empty capture stays open (fresh shell pre-paint leaves SNAP
 # unpinned; draw must tolerate the missing entry instead of aborting under set -u)
-SYN="$T/dyn-s"; mkdir -p "$SYN"
-printf '$s0\tmain\n' > "$SYN/sessions"
-printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
-printf '@wnew\t2\tnew\ttnew\t/tmp/new\t1\t\n' > "$SYN/on_new_window"
-printf '$snew\tsecond\n' > "$SYN/on_new_session"
-printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$SYN/windows_snew"
-RS=$(mktemp -d "$T/run-s.XXXXXX"); mk_stub "$RS"
+mkdir -p "$T/dyn-s"
+printf '$s0\tmain\n' > "$T/dyn-s/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-s/windows_s0"
+printf '@wnew\t2\tnew\ttnew\t/tmp/new\t1\t\n' > "$T/dyn-s/on_new_window"
+printf '$snew\tsecond\n' > "$T/dyn-s/on_new_session"
+printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$T/dyn-s/windows_snew"
 # (s1) c with empty new-pane capture: stays open, lands highlighted, no attach
-: > "$T/calls-s1"; : > "$RS/err-s1"
-CAP_EMPTY=1 ON_NEW_WINDOW="$SYN/on_new_window" FIXDIR="$SYN" CALL_LOG="$T/calls-s1" PATH="$RS/bin:$PATH" \
-  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-  'cq' "$REPO" "$T/out-s1" "$RS/err-s1"
+CAP_EMPTY=1 ON_NEW_WINDOW="$T/dyn-s/on_new_window" run_dynamic s 'cq' "$T/out-s1" "$T/calls-s1"
 grep -qF 'new-window' "$T/calls-s1" || fail "empty-capture c creates"
 grep -qF 'select-window' "$T/calls-s1" && fail "empty-capture c jumped"
 grep -qF 'switch-client' "$T/calls-s1" && fail "empty-capture c reattached"
 grep -qF '[2] new' "$T/out-s1" || fail "empty-capture c lands on new"
 tail -c 8192 "$T/out-s1" | grep -qF "$(printf '\x1b[7m[2]')" || fail "empty-capture c highlighted"
 # reset state for the session case
-printf '$s0\tmain\n' > "$SYN/sessions"
-printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$SYN/windows_s0"
+printf '$s0\tmain\n' > "$T/dyn-s/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-s/windows_s0"
 # (s2) N with empty new-pane capture: stays open, lands on new session, no attach
-: > "$T/calls-s2"; : > "$RS/err-s2"
-CAP_EMPTY=1 ON_NEW_SESSION="$SYN/on_new_session" STUB_W=140 FIXDIR="$SYN" CALL_LOG="$T/calls-s2" PATH="$RS/bin:$PATH" \
-  bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-  '\x1b[ANq' "$REPO" "$T/out-s2" "$RS/err-s2"
+CAP_EMPTY=1 ON_NEW_SESSION="$T/dyn-s/on_new_session" STUB_W=140 run_dynamic s '\x1b[ANq' "$T/out-s2" "$T/calls-s2"
 grep -qF 'new-session' "$T/calls-s2" || fail "empty-capture N creates"
 grep -qF 'select-window' "$T/calls-s2" && fail "empty-capture N jumped"
 grep -qF 'switch-client' "$T/calls-s2" && fail "empty-capture N reattached"
@@ -337,19 +317,31 @@ PY
 }
 
 # (t) 40x12 n2 q-only: title-only cells (band_h=1, snap_h=0), one-line footer
-STUB_H=12 STUB_W=40 run_picker n2 'q' "$T/out-t"
-cmp -s "$T/out-t" "$FIXBASE/golden-small40x12-n2.out" || fail "golden-small40x12 diff"
-grep -qF '\x1b' "$T/out-t" && fail "literal-x1b in out-t"
-bounds_check "$T/out-t" 12 40
-grep -qF '╰' "$T/out-t" || fail "small40x12 bottom border"
-grep -qF '╯' "$T/out-t" || fail "small40x12 bottom border"
+if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+  STUB_H=12 STUB_W=40 run_picker n2 'q' "$FIXBASE/golden-small40x12-n2.out"
+  OUT_T="$FIXBASE/golden-small40x12-n2.out"
+else
+  STUB_H=12 STUB_W=40 run_picker n2 'q' "$T/out-t"
+  cmp -s "$T/out-t" "$FIXBASE/golden-small40x12-n2.out" || fail "golden-small40x12 diff"
+  OUT_T="$T/out-t"
+fi
+grep -qF '\x1b' "$OUT_T" && fail "literal-x1b in out-t"
+bounds_check "$OUT_T" 12 40
+grep -qF '╰' "$OUT_T" || fail "small40x12 bottom border"
+grep -qF '╯' "$OUT_T" || fail "small40x12 bottom border"
 
 # (u) 70x20 six Right-arrow: footer-wrap regime above the clamp regime
-STUB_H=20 STUB_W=70 run_picker six '\x1b[Cq' "$T/out-u"
-cmp -s "$T/out-u" "$FIXBASE/golden-mid70x20-six.out" || fail "golden-mid70x20 diff"
-grep -qF '\x1b' "$T/out-u" && fail "literal-x1b in out-u"
-bounds_check "$T/out-u" 20 70
-grep -qF "$(printf '\x1b[7m[1]')" "$T/out-u" || fail "mid70x20 arrow-move select"
+if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+  STUB_H=20 STUB_W=70 run_picker six '\x1b[Cq' "$FIXBASE/golden-mid70x20-six.out"
+  OUT_U="$FIXBASE/golden-mid70x20-six.out"
+else
+  STUB_H=20 STUB_W=70 run_picker six '\x1b[Cq' "$T/out-u"
+  cmp -s "$T/out-u" "$FIXBASE/golden-mid70x20-six.out" || fail "golden-mid70x20 diff"
+  OUT_U="$T/out-u"
+fi
+grep -qF '\x1b' "$OUT_U" && fail "literal-x1b in out-u"
+bounds_check "$OUT_U" 20 70
+grep -qF "$(printf '\x1b[7m[1]')" "$OUT_U" || fail "mid70x20 arrow-move select"
 
 # (v) wide canvas: footer fits, so paint_footer takes the python-skipping
 # fast path. Regression: the fast path appended $'\n' to the bottom-row

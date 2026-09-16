@@ -39,9 +39,6 @@ for src in "$REPO"/bin/*; do
   echo "linked $dst -> $src"
 done
 
-## (retired 2026-09: the prefix-O pane-picker is gone since 59b6bc0; a
-## surviving ~/.local/bin/tmux-pane-picker symlink is user-owned — left alone)
-
 # 2. Bindings: source the snippet from ~/.tmux.conf (before TPM's run line,
 #    which must stay last). Retire superseded inline binds as comments.
 if [ -f "$TMUX_CONF" ]; then
@@ -52,7 +49,7 @@ if [ -f "$TMUX_CONF" ]; then
     awk -v snippet="$SNIPPET" '
       BEGIN { inserted=0 }
       /joeverview\.conf/ { next }
-      /^bind-key +[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
+      /^bind-key +(-T +[^ ]+ +)?[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
       /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
       { print }
       END { if (!inserted) print "source-file \"" snippet "\"" }

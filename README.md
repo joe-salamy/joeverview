@@ -19,7 +19,7 @@ git clone https://github.com/joe-salamy/joeverview.git ~/Code/joeverview
 ~/Code/joeverview/install.sh
 ```
 
-`install.sh` checks dependencies, symlinks `bin/*` into `~/.local/bin/`, adds `source-file …/tmux/joeverview.conf` to `~/.tmux.conf` (retiring the three inline binds it supersedes), and reloads tmux. Idempotent — safe to re-run after `git pull`. Backs up `~/.tmux.conf` before touching it.
+`install.sh` checks dependencies, symlinks `bin/*` into `~/.local/bin/`, adds `source-file …/tmux/joeverview.conf` to `~/.tmux.conf` (retiring the two inline binds it supersedes), and reloads tmux. Idempotent — safe to re-run after `git pull`. Backs up `~/.tmux.conf` before touching it.
 
 The repo checkout is the source of truth: `~/.local/bin/tmux-*` are symlinks into `bin/`, so edits here go live the next time a popup opens. Binding changes need `prefix r`.
 
