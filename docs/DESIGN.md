@@ -48,6 +48,10 @@ Same-page moves repaint only the affected title row(s): one `EL` clear per row, 
 gutter + borders rewritten with no-EL moves (per-cell `EL` wiped the sibling title). No-op keys
 redraw nothing. Cursor hidden (`?25l`) while open, `stty` state restored on exit.
 
+Empty-cell padding is built once per paint with Bash `printf -v` and reused for each row.
+Command substitution inside that row loop would spawn a subprocess for every blank row,
+delaying the first frame while the fullscreen popup is empty.
+
 Quoting trap that bit: `'\x1b[K'` in single quotes emits literal text — escapes are built with
 `printf -v '…\x1b…'`. tests/grid-render.sh asserts zero literal `\x1b` sequences over rendered
 output for this reason.

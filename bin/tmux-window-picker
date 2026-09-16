@@ -689,7 +689,8 @@ restore_gutters() {
   done
 }
 paint_cells() {
-  local r c idx coff roff l lines
+  local r c idx coff roff l lines blank
+  printf -v blank '%*s' "$cell_w" ''
   for ((r = 0; r < VROWS; r++)); do
     if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
     for ((c = 0; c < COLS; c++)); do
@@ -704,7 +705,7 @@ paint_cells() {
         done
       else
         for ((l = 0; l < band_h; l++)); do
-          put $((roff + l)) "$coff" "$(printf '%*s' "$cell_w" '')"
+          put $((roff + l)) "$coff" "$blank"
         done
       fi
     done
