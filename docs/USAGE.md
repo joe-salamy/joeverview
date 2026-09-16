@@ -40,4 +40,4 @@ Session ops only — window keys (`c`, `0`-`9`, `<>`) do nothing here. `↓`/`s`
 
 ## `prefix /` — content search
 
-fzf over the last 500 non-blank scrollback lines of every pane, each row tagged `session:window` context. `Enter` jumps to the pane holding the match (switches session/window as needed), `Ctrl-Y` yanks the matched line to the tmux buffer. The thing `prefix w` can't do (names-only).
+fzf over the last 500 lines per pane, blank lines skipped, each row tagged `session:window` context. `Enter` jumps to the pane holding the match (switches session/window as needed), `Ctrl-Y` yanks the matched line to the tmux buffer. The thing `prefix w` can't do (names-only).

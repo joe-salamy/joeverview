@@ -19,10 +19,10 @@ for src in "$REPO"/bin/*; do
   fi
 done
 
-if [ -f "$TMUX_CONF" ] && grep -qF "joeverview.conf" "$TMUX_CONF"; then
+if [ -f "$TMUX_CONF" ] && grep -qE "source-file.*joeverview|superseded by joeverview" "$TMUX_CONF"; then
   cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
   awk '
-    /joeverview\.conf/ { next }
+    /^[[:space:]]*#?[[:space:]]*(set -g @joeverview_bin|source-file).*joeverview/ { next }
     /^# superseded by joeverview \(see source-file below\): / { sub(/^# superseded by joeverview \(see source-file below\): /, ""); print; next }
     { print }
   ' "$TMUX_CONF" > "$TMUX_CONF.tmp" && mv "$TMUX_CONF.tmp" "$TMUX_CONF"
@@ -33,4 +33,7 @@ fi
 
 if tmux info >/dev/null 2>&1; then
   tmux source-file "$TMUX_CONF" && echo "tmux reloaded"
+  tmux unbind-key -T prefix o 2>/dev/null || true
+  tmux unbind-key -T prefix / 2>/dev/null || true
+  tmux set -gu @joeverview_bin 2>/dev/null || true
 fi

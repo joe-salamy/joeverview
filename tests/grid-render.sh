@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # grid-render harness: stub-tmux golden + interaction checks for bin/tmux-window-picker.
-# Goldens are byte-exact; bless with UPDATE_GOLDEN=1 only after eyeballing the diff; never commit a bless alongside a behavior change.
-# UPDATE_GOLDEN=1 re-blesses all seven goldens (n1-n4, multi, small40x12-n2, mid70x20-six).
+# Goldens are byte-exact; bless with UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 only after eyeballing the diff; never commit a bless alongside a behavior change.
+# UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 re-blesses five q-only goldens (n1-n4, multi) plus two geometry goldens in (t)/(u).
+# Label (b) is intentionally skipped. CI fails on a dirty tree so an accidental bless is loud.
 # No live tmux server needed. Stub defaults to 30x60 geometry (cell_w=26,
 # title_w=24, band_h=10, snap_h=9, vx=29, bot_y=28, mid_y=13); STUB_H/STUB_W
 # in the environment override the stub canvas (small-geometry cases (t)/(u)).
@@ -11,7 +12,7 @@ FIXBASE="$REPO/tests/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/jv-render.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 
-fail() { echo "FAIL $1"; exit 1; }
+fail() { echo "FAIL $1" >&2; exit 1; }
 
 # Write stub tmux into $1/bin/tmux (executable). Reads $FIXDIR + $CALL_LOG.
 # Hooks: CAP_EMPTY=1 prints empty captures (test s); ON_NEW_WINDOW/ON_NEW_SESSION
@@ -104,7 +105,7 @@ STUB
 # Copies the fixture to temp so stub mutations (new/kill/rename) never dirty the repo.
 run_picker() {
   local fix=$1 input=$2 out=$3 log=${4:-/dev/null}
-  local r fdir
+  local r fdir st
   r=$(mktemp -d "$T/run.XXXXXX")
   fdir=$(mktemp -d "$T/fix.XXXXXX")
   cp -r "$FIXBASE/$fix/." "$fdir/"
@@ -113,6 +114,8 @@ run_picker() {
   STUB_H="${STUB_H:-}" STUB_W="${STUB_W:-}" FIXDIR="$fdir" CALL_LOG="$log" PATH="$r/bin:$PATH" \
     bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
     "$input" "$REPO" "$out" "$r/err"
+  st=$?; (( st == 0 )) || fail "picker exit $st ($fix)"
+  [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr ($fix)"; }
 }
 
 # run_dynamic <tag> <printf-%b-input> <outfile> <call_log> — dynamic-fixture
@@ -121,7 +124,7 @@ run_picker() {
 # passes through like run_picker's callers set it inline.
 run_dynamic() {
   local tag=$1 input=$2 out=$3 log=$4
-  local r
+  local r st
   r=$(mktemp -d "$T/run-$tag.XXXXXX")
   mk_stub "$r"
   : > "$log"; : > "$r/err"
@@ -130,12 +133,13 @@ run_dynamic() {
   FIXDIR="$T/dyn-$tag" CALL_LOG="$log" PATH="$r/bin:$PATH" \
     bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
     "$input" "$REPO" "$out" "$r/err"
+  st=$?; (( st == 0 )) || fail "picker exit $st (dyn-$tag)"
+  [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr (dyn-$tag)"; }
 }
 
 # (a) q-only goldens for n1-n4 + multi
 for name in n1 n2 n3 n4 multi; do
-  [[ -f "$FIXBASE/golden-$name.out" ]] || fail "golden-$name missing"
-  if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+  if [[ ${UPDATE_GOLDEN:-} == 1 && ${CONFIRM_EYEBALL:-} == 1 ]]; then
     run_picker "$name" 'q' "$FIXBASE/golden-$name.out"
   else
     run_picker "$name" 'q' "$T/out-$name"
@@ -149,7 +153,6 @@ check_no_literal_esc() { for f in "$@"; do grep -qF '\x1b' "$f" && fail "literal
 run_picker n4 '\x1b[Cq' "$T/out-c"
 SEL1=$(printf '\x1b[7m[1]')
 SEL0=$(printf '\x1b[7m[0]')
-grep -qF "$SEL1" "$T/out-c" || fail "arrow-move select"
 tail -c 1024 "$T/out-c" | grep -qF "$SEL1" || fail "arrow-move tail-select"
 tail -c 1024 "$T/out-c" | grep -qF "$SEL0" && fail "arrow-move stale-select"
 
@@ -198,6 +201,8 @@ grep -qF 'new-session' "$T/calls-h3" || fail "confirm-esc quit instead of abort"
 # (i) n1 (single session) fed Up focuses the bar anyway (STUB_W=140: the
 # bar footer carries its trailing session counter only when it fits)
 STUB_W=140 run_picker n1 '\x1b[Aq' "$T/out-i"
+grep -qF 'main' "$T/out-i" || fail "single-session medallion missing"
+tail -c 2048 "$T/out-i" | grep -qF 'session 1/1' || fail "single-session bar footer"
 
 # (j) n1 fed Up+X must NOT kill the sole session (never even prompts)
 : > "$T/calls-j"
@@ -254,7 +259,6 @@ sw=$(grep -nF 'switch-client' "$T/calls-q" | head -1 | cut -d: -f1)
 kw=$(grep -nF 'kill-session' "$T/calls-q" | head -1 | cut -d: -f1)
 (( sw < kw )) || fail "kill-preswitch order"
 grep -qF 'select-window' "$T/calls-q" && fail "kill-middle jumped to window"
-grep -qF '←  C  →' "$T/out-q" || fail "kill-middle lands on C"
 tail -c 8192 "$T/out-q" | grep -qF '←  C  →' || fail "kill-middle tail on C"
 tail -c 8192 "$T/out-q" | grep -qF "$(printf '  \x1b[7m←  C  →\x1b[0m  ')" || fail "kill-middle C highlighted"
 tail -c 2048 "$T/out-q" | grep -qF 'session 2/2' || fail "kill-middle session footer"
@@ -268,7 +272,6 @@ CUR_SID='$s0' CUR_WID='@w0' STUB_W=140 run_dynamic r '\x1b[ARnewname\nq' "$T/out
 grep -qF 'rename-session -t $s0 newname' "$T/calls-r" || fail "rename-session log"
 grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
 grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
-grep -qF '←  newname  →' "$T/out-r" || fail "rename lands on new name"
 tail -c 8192 "$T/out-r" | grep -qF "$(printf '  \x1b[7m←  newname  →\x1b[0m  ')" || fail "rename new name highlighted"
 tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
 
@@ -298,6 +301,26 @@ grep -qF 'switch-client' "$T/calls-s2" && fail "empty-capture N reattached"
 grep -qF 'second' "$T/out-s2" || fail "empty-capture N lands on new"
 tail -c 8192 "$T/out-s2" | grep -qF "$(printf '  \x1b[7m←  second  →\x1b[0m  ')" || fail "empty-capture N highlighted"
 tail -c 2048 "$T/out-s2" | grep -qF 'session 2/2' || fail "empty-capture N footer"
+# (s3) empty pane_title does not shift later fields: title keeps
+# [index] name │  │ /path and the ⧉ badge survives
+mkdir -p "$T/dyn-et"
+printf '$s0\tmain\n' > "$T/dyn-et/sessions"
+printf '@w0\t0\twin0\t\t/tmp/w0\t2\t\n' > "$T/dyn-et/windows_s0"
+STUB_W=140 run_dynamic et 'q' "$T/out-et" "$T/calls-et"
+grep -qF '[0] win0 │  │ /tmp/w0 ⧉ 2' "$T/out-et" || fail "empty-title shape"
+# (s4) window linked into two sessions: opening from the second session
+# highlights its occurrence there and Enter targets that session
+mkdir -p "$T/dyn-lw"
+printf '$s0\tA\n$s1\tB\n' > "$T/dyn-lw/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-lw/windows_s0"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-lw/windows_s1"
+CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw 'q' "$T/out-lw" "$T/calls-lw"
+grep -qF '←  B  →' "$T/out-lw" || fail "linked medallion shows viewed session"
+grep -qF "$(printf '\x1b[7m[0]')" "$T/out-lw" || fail "linked highlights viewed occurrence"
+CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw '\n' "$T/out-lw2" "$T/calls-lw2"
+grep -qF 'select-window -t @w0' "$T/calls-lw2" || fail "linked enter selects window"
+grep -qF 'switch-client -t $s0' "$T/calls-lw2" && fail "linked enter hit other session"
+grep -qF 'switch-client' "$T/calls-lw2" && fail "linked enter switched while attached"
 
 # bounds_check <file> <H> <W>: every CUP address is inside the canvas and the
 # final footer payload (bytes after the last footer-row EL) is one line <= W.
@@ -313,11 +336,12 @@ tail = data.rsplit('\x1b[%d;1H\x1b[K' % H, 1)[-1]
 tail = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', tail)
 assert '\n' not in tail, repr(tail[-20:])
 vw = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else (0 if unicodedata.combining(ch) else 1) for ch in tail)
+assert vw <= W, (vw, W, repr(tail[-60:]))
 PY
 }
 
 # (t) 40x12 n2 q-only: title-only cells (band_h=1, snap_h=0), one-line footer
-if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+if [[ ${UPDATE_GOLDEN:-} == 1 && ${CONFIRM_EYEBALL:-} == 1 ]]; then
   STUB_H=12 STUB_W=40 run_picker n2 'q' "$FIXBASE/golden-small40x12-n2.out"
   OUT_T="$FIXBASE/golden-small40x12-n2.out"
 else
@@ -325,13 +349,12 @@ else
   cmp -s "$T/out-t" "$FIXBASE/golden-small40x12-n2.out" || fail "golden-small40x12 diff"
   OUT_T="$T/out-t"
 fi
-grep -qF '\x1b' "$OUT_T" && fail "literal-x1b in out-t"
 bounds_check "$OUT_T" 12 40
 grep -qF '╰' "$OUT_T" || fail "small40x12 bottom border"
 grep -qF '╯' "$OUT_T" || fail "small40x12 bottom border"
 
 # (u) 70x20 six Right-arrow: footer-wrap regime above the clamp regime
-if [[ ${UPDATE_GOLDEN:-} == 1 ]]; then
+if [[ ${UPDATE_GOLDEN:-} == 1 && ${CONFIRM_EYEBALL:-} == 1 ]]; then
   STUB_H=20 STUB_W=70 run_picker six '\x1b[Cq' "$FIXBASE/golden-mid70x20-six.out"
   OUT_U="$FIXBASE/golden-mid70x20-six.out"
 else
@@ -339,7 +362,6 @@ else
   cmp -s "$T/out-u" "$FIXBASE/golden-mid70x20-six.out" || fail "golden-mid70x20 diff"
   OUT_U="$T/out-u"
 fi
-grep -qF '\x1b' "$OUT_U" && fail "literal-x1b in out-u"
 bounds_check "$OUT_U" 20 70
 grep -qF "$(printf '\x1b[7m[1]')" "$OUT_U" || fail "mid70x20 arrow-move select"
 
@@ -357,6 +379,10 @@ STUB_H=30 STUB_W=200 run_picker n1 '\x1b[A\x1b[Bq' "$T/out-v2"
 [ "$(tr -d -c '\n\r' < "$T/out-v2" | wc -c)" -eq 0 ] || fail "wide moves scrolled"
 bounds_check "$T/out-v2" 30 200
 
-check_no_literal_esc "$T"/out-*
+check_no_literal_esc "$T"/out-* "$OUT_T" "$OUT_U"
+# Negative self-test: an over-wide footer must fail bounds_check
+printf '\x1b[1;1H\x1b[K%s' '123456' > "$T/out-wide-neg"
+if ( bounds_check "$T/out-wide-neg" 1 3 2>/dev/null ); then fail "bounds-negative missed"; fi
+
 
 echo "render: PASS"

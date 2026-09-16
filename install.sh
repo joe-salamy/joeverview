@@ -48,7 +48,7 @@ if [ -f "$TMUX_CONF" ]; then
     cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
     awk -v snippet="$SNIPPET" '
       BEGIN { inserted=0 }
-      /joeverview\.conf/ { next }
+      /^[[:space:]]*#?[[:space:]]*(set -g @joeverview_bin|source-file).*joeverview/ { next }
       /^bind-key +(-T +[^ ]+ +)?[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
       /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
       { print }

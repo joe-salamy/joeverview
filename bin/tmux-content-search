@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Fuzzy search pane scrollback contents across all windows/sessions, jump to the match.
+# Fuzzy search pane scrollback contents across all windows/sessions, jump to the pane holding the match.
 # Bound to `prefix /` via display-popup. Enter=jumps to the pane holding the
 # line (switching session/window as needed), Ctrl-Y=yanks the line to the tmux buffer.
 # Searches scrollback contents with session:window context per row.
 # Rows are keyed by stable #{pane_id} (%id): bare `W.P` targets can collide
 # with session names, so every -t uses the %id before the first separator.
-# Fields use \x1f (never in terminal output) so colons/tabs in content are safe;
-# field 1 is %id (hidden via --with-nth), field 2 is session:window context,
-# field 3 is the matched line.
+# tmux query splits pane id on the first space; fzf rows use \x1f with field 1 %id (hidden), field 2 context, field 3 line.
 set -u
 command -v fzf >/dev/null 2>&1 || { echo "tmux-content-search needs fzf" >&2; exit 1; }
 LINES=500
 SEP=$'\x1f'
 # fzf preview stays sed (grid uses python; preview must stay fast) — do not unify into python.
-PANES=$(tmux list-panes -s -F "#{pane_id}${SEP}#{session_name}:#{window_index}:#{window_name}")
-MATCH=$(while IFS="$SEP" read -r p ctx; do
+PANES=$(tmux list-panes -a -F "#{pane_id} #{session_name}:#{window_index}:#{window_name}")
+MATCH=$(while read -r p ctx; do
   [ -z "${p:-}" ] && continue
   tmux capture-pane -p -S -$LINES -t "$p" 2>/dev/null | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
     printf '%s%s%s%s%s\n' "$p" "$SEP" "$ctx │" "$SEP" "$line"
@@ -26,9 +24,9 @@ done <<<"$PANES" | fzf --ansi --reverse --border --height=100% \
   --header="enter=jump-to-pane  ctrl-y=yank-line  (fuzzy over last $LINES lines per pane)" \
   --preview="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//'" \
   --preview-window='right:60%:nowrap' \
-  --bind='ctrl-y:execute-silent(tmux set-buffer -- "{3..}")') || exit 0
+  --bind='ctrl-y:execute-silent(tmux set-buffer -- {3..})') || exit 0
 [ -z "${MATCH:-}" ] && exit 0
-TARGET_ID=$(printf '%s' "$MATCH" | cut -d"$SEP" -f1)
+TARGET_ID=${MATCH%%"$SEP"*}
 # Cross-session parity with the window grid's jump_win: select-pane alone
 # leaves the client behind when the pane lives in another session.
 # display-message -t resolves session/window directly; dead panes fall back
@@ -38,4 +36,4 @@ P_SESS=${P_IDS%% *}; P_WIN=${P_IDS##* }
 CUR_SESS=$(tmux display-message -p '#{session_id}' 2>/dev/null)
 if [[ -n ${P_SESS:-} && ${P_SESS:-} != "${CUR_SESS:-}" ]]; then tmux switch-client -t "$P_SESS" 2>/dev/null; fi
 if [[ -n ${P_WIN:-} ]]; then tmux select-window -t "$P_WIN" 2>/dev/null; fi
-tmux select-pane -t "$TARGET_ID"
+tmux select-pane -t "$TARGET_ID" 2>/dev/null

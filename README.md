@@ -4,7 +4,7 @@ Mission Control for tmux — a better `prefix w`.
 
 `prefix o` opens a fullscreen 2×2 snapshot grid of your windows — arrows/WASD to move, `Enter` to jump, `q` to cancel. No typing, no session list, no directory scan: it shows the windows you have, at full resolution, and gets out of the way. Window and session management (`c`/`X`/`R`, move, rename, kill-confirm) happens inline, without leaving the overview.
 
-One companion rounds it out: `prefix /` searches scrollback contents across all panes and jumps to the match (the thing `prefix w` can't do — names only).
+One companion rounds it out: `prefix /` searches scrollback contents across all panes and jumps to the pane holding the match (the thing `prefix w` can't do — names only).
 
 Built for a single-session tmux with `renumber-windows on` and zero-based indexes, but nothing depends on that.
 

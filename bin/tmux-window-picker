@@ -47,65 +47,6 @@ osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
 sgr = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 def vw(ch):
     return 2 if unicodedata.east_asian_width(ch) in (\"W\",\"F\") else (0 if unicodedata.combining(ch) else 1)
-"
-PY="$PY_COMMON
-w = int(sys.argv[1])
-keep = int(sys.argv[2]) if len(sys.argv) > 2 else None
-rows = []
-for raw in sys.stdin:
-    line = osc.sub('', raw.rstrip('\n'))
-    out = []
-    v = 0
-    content = False
-    saw = False
-    done = False
-    for tok in re.split(r'(\x1b\[[0-9;]*[A-Za-z])', line):
-        if done or not tok:
-            continue
-        if sgr.fullmatch(tok):
-            out.append(tok)
-            saw = True
-            continue
-        for ch in tok:
-            c = vw(ch)
-            if v + c > w:
-                done = True
-                break
-            out.append(ch)
-            v += c
-            if not ch.isspace():
-                content = True
-    if saw:
-        out.append('\x1b[0m')
-    # Folded-in rstrip (was a sed stage): capture-pane pads lines with spaces
-    # that must not eat cell width; SGR tokens are multi-char, never popped.
-    while out and len(out[-1]) == 1 and out[-1] in ' \t':
-        out.pop()
-    rows.append((content, ''.join(out)))
-if keep is not None:
-    texts = [t for c, t in rows if c][-keep:] if keep > 0 else []
-else:
-    texts = [t for _, t in rows]
-sys.stdout.write('\n'.join(texts) + ('\n' if texts else ''))"
-# Batch truncation for one fault: titles + missing visible captures +
-# medallion name in a single python spawn (argv: title_w cell_w snap_h medw
-# multi), raw captures fed in parallel so N cells cost ~1 tmux RTT, not N.
-# Framing: stdin is NUL-joined blocks (titles, one raw capture per missing
-# cell, medallion source name); stdout is NUL-joined blocks (titles, one
-# truncated capture per missing cell, medallion name + outer width). Python
-# never sees counts: every middle block is a capture, so bash indexes output
-# as BATCH[0]=titles, BATCH[1..nmiss]=captures, BATCH[1+nmiss]=medallion.
-# The medallion width is the arrow/name padding (10 multi / 4 single) plus
-# the name's visible width, computed where the width rule already lives.
-# Empty blocks stay empty: python emits a bare separator (no trailing
-# newline), so mapfile -d '' keeps blocks aligned and empty captures stay
-# unpinned exactly like trunc() does. Newlines split exactly like $PY's stdin
-# loop (one trailing newline adds no row; CR/CRLF normalize). Bytes: python
-# reads and writes UTF-8 with errors=replace so a stray byte never kills a
-# draw; NULs are stripped from raw captures (tr -d) since NUL separates blocks.
-# trunc_line reuses the shared PY_COMMON width rule with $PY.
-BATCHPY="$PY_COMMON
-title_w, cell_w, snap_h, medw, multi = (int(a) for a in sys.argv[1:6])
 def trunc_line(line, w):
     line = osc.sub('', line)
     out = []
@@ -131,6 +72,32 @@ def trunc_line(line, w):
     while out and len(out[-1]) == 1 and out[-1] in ' \t':
         out.pop()
     return ''.join(out)
+"
+PY="$PY_COMMON
+w = int(sys.argv[1])
+rows = []
+for raw in sys.stdin:
+    rows.append(trunc_line(raw.rstrip('\n'), w))
+sys.stdout.write('\n'.join(rows) + ('\n' if rows else ''))"
+# Batch truncation for one fault: titles + missing visible captures +
+# medallion name in a single python spawn (argv: title_w cell_w snap_h medw
+# multi), raw captures fed in parallel so N cells cost ~1 tmux RTT, not N.
+# Framing: stdin is NUL-joined blocks (titles, one raw capture per missing
+# cell, medallion source name); stdout is NUL-joined blocks (titles, one
+# truncated capture per missing cell, medallion name + outer width). Python
+# never sees counts: every middle block is a capture, so bash indexes output
+# as BATCH[0]=titles, BATCH[1..nmiss]=captures, BATCH[1+nmiss]=medallion.
+# The medallion width is the arrow/name padding (10 multi / 4 single) plus
+# the name's visible width, computed where the width rule already lives.
+# Empty blocks stay empty: python emits a bare separator (no trailing
+# newline), so mapfile -d '' keeps blocks aligned and empty captures stay
+# unpinned exactly like trunc() does. Newlines split exactly like $PY's stdin
+# loop (one trailing newline adds no row; CR/CRLF normalize). Bytes: python
+# reads and writes UTF-8 with errors=replace so a stray byte never kills a
+# draw; NULs are stripped from raw captures (tr -d) since NUL separates blocks.
+# trunc_line reuses the shared PY_COMMON width rule with $PY.
+BATCHPY="$PY_COMMON
+title_w, cell_w, snap_h, medw, multi = (int(a) for a in sys.argv[1:6])
 def trunc_block(lines, w, keep=None):
     rows = []
     for raw in lines:
@@ -218,7 +185,7 @@ TITLES_DIRTY=0
 # Returns 1 when no windows remain.
 load_data() {
   local sid sname wid widx wname wtitle wpath panes alert suffix c k idx
-  local wsid row
+  local wsid row rest
   local -A seen
   local -a WINROWS
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
@@ -241,7 +208,15 @@ load_data() {
     SESS_START[$k]=$idx
     c=0
     for row in ${WINROWS[@]+"${WINROWS[@]}"}; do
-      IFS=$'\t' read -r wsid wid widx wname wtitle wpath panes alert <<<"$row"
+      rest=$row
+      wsid=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      wid=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      widx=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      wname=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      wtitle=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      wpath=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      panes=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
+      alert=$rest
       [[ $wsid == "$sid" ]] || continue
       IDS[$idx]=$wid
       WIDX[$idx]=$widx
@@ -344,6 +319,7 @@ do_kill_window() {
 # New detached session; grid lands on it with bar focus so the user can
 # keep paging or dive in (Down, then c for windows). Full refresh.
 do_new_session() {
+  local newsid
   (( bar )) || return 0
   newsid=$(tmux new-session -d -P -F "#{session_id}" 2>/dev/null) || return 0
   refresh_to sid="$newsid" bar=1
@@ -467,15 +443,15 @@ do_rename_session() {
 }
 
 load_data || exit 0
-sel=0
 sess=0
-for ((k = 0; k < n; k++)); do
-  if [[ ${IDS[$k]} == "$cur" ]]; then sel=$k; break; fi
-done
 for ((k = 0; k < nsess; k++)); do
   if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
 done
 s0=${SESS_START[$sess]}; send=$((s0 + SESS_COUNT[$sess]))
+sel=$s0
+for ((k = s0; k < send; k++)); do
+  if [[ ${IDS[$k]} == "$cur" ]]; then sel=$k; break; fi
+done
 place_top
 # On-demand snapshots keyed by stable window_id: a present non-empty SNAP entry
 # is the loaded flag. Empty captures (fresh shell pre-paint) are never pinned
@@ -491,7 +467,7 @@ place_top
 # its char length pre-check (paint_footer) usually avoids a spawn, and a
 # per-row keypress path (trunc_footer_direct) must not pay a batch round-trip.
 fault_visible() {
-  local e=$((top + COLS * VROWS)) k wid key nmiss=0 bi
+  local e=$((top + COLS * VROWS)) k wid key nmiss=0 bi row
   local -a MW=()
   local -a BATCH=()
   local medw med_src multi=0
@@ -591,8 +567,8 @@ paint_row() {
   return 0
 }
 # Session medallion for the top border: padded arrows when paging is
-# possible, padded bare name when it is not (single session hides the bar
-# entirely — no focus, no hint). Truncated to fit between the
+# possible, padded bare name when it is not (single session hides session switching — the bar still focuses (session ops live there)).
+# Truncated to fit between the
 # ' Windows ' stamp and the corners. Focus keeps the same footprint: the
 # outer 2 cells stay normal-video gap, only the inner core reverses, so the
 # border length never changes with focus.
@@ -752,7 +728,7 @@ mid_junction() {
   else printf ' '; fi
 }
 draw() {
-  local b seg x y r c idx coff roff l sbar sinner sblen sbx lines
+  local b seg x y r c idx coff roff l sbar sinner sblen sbx lines u d
   local -a occ4
   fault_visible
   FRAME=$'\x1b[?25l'

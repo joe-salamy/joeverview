@@ -12,4 +12,4 @@ jobs:
       - name: Install joeverview
         run: ./install.sh
       - name: Smoke test
-        run: ./tests/smoke.sh
+        run: SMOKE_CHECK_LINKS=1 ./tests/smoke.sh
