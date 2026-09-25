@@ -34,7 +34,10 @@ JVTMP=$(mktemp -d "${TMPDIR:-/tmp}/jv.XXXXXX") || { echo "tmux-window-picker nee
 cleanup() { printf '%s' $'\x1b[?25h'; [[ -n ${JVTMP:-} ]] && rm -rf "$JVTMP"; [ -n "${saved_stty:-}" ] && stty "$saved_stty" 2>/dev/null; }
 trap cleanup EXIT
 printf '\x1b[?25l\x1b[2J'
-stty -echo -icanon min 1 time 0 2>/dev/null
+# -ixon: C-s (XOFF) would otherwise pause output and freeze the grid on the
+# next redraw; -iexten: C-v (LNEXT) would swallow the following key. Both
+# now reach read as plain bytes and fall through as ignored keys.
+stty -echo -icanon -ixon -iexten min 1 time 0 2>/dev/null
 
 # Visible-width-aware truncation: keeps SGR colors atomic, strips OSC
 # hyperlinks, never splits UTF-8 (system `cut -c` counts bytes). Program goes
@@ -388,7 +391,7 @@ read_name() {
   old=$(printf '%s' "$old" | trunc "$maxold")
   at $((H - 1)) 0
   printf '\x1b[?25h'
-  stty -echo -icanon min 1 time 0 2>/dev/null || true
+  stty -echo -icanon -ixon -iexten min 1 time 0 2>/dev/null || true
   printf 'rename %s [%s]: ' "$kind" "$old"
   prompt="rename $kind [$old]"
   prompt_visible=$(vwidth "$prompt")
@@ -847,6 +850,15 @@ while IFS= read -rsn1 k; do
       D) nav_left && continue ;;
       *) continue ;;
     esac
+  elif [[ $k == $'\x02' ]]; then
+    # tmux prefix (C-b): the popup receives every key, so prefix bindings
+    # never fire here. Drop the key after it (and any escape sequence it
+    # starts) so prefix habits like C-b c / C-b X don't run picker actions.
+    IFS= read -rsn1 b || break
+    if [[ $b == $'\x1b' ]] && IFS= read -rsn1 -t 0.05 b && [[ $b == '[' ]]; then
+      while IFS= read -rsn1 -t 0.05 d && [[ $d != [A-Za-z~] ]]; do :; done
+    fi
+    continue
   elif [[ -z $k || $k == $'\n' ]]; then
     if ((bar)); then tmux switch-client -t "${SESS_IDS[$sess]}"; exit 0; fi
     jump_win "$sel"

@@ -6,6 +6,8 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 2×2 snapshot grid with two focuses. The footer always shows exactly the keys that work right now — unlisted keys do nothing (letter keys accept either case except `x`, and `r`≠`R` (refresh vs rename); `x` never kills).
 
+The popup takes every key, so tmux prefix bindings (e.g. `prefix C-s` for resurrect save) don't fire while it's open: `C-b` and the key after it are ignored, and `C-s`/`C-q`/`C-v` are plain ignored keys (no flow-control freeze). Close the overview first to use them.
+
 ### Window focus (the grid)
 
 Each cell: `[index] name │ task │ path` title (+ `⧉ N` when the window holds N tmux panes) + bottom-left of the window's active pane. Cursor starts on the current window. Selected cell is reverse-highlighted; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock).
