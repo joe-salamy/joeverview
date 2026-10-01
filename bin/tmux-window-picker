@@ -153,9 +153,6 @@ vwidth() {
 # shares the PY_COMMON width rule (wide→2, combining→0).
 VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.stdin.read()); print(sum(2 if unicodedata.east_asian_width(c) in ("W","F") else (0 if unicodedata.combining(c) else 1) for c in t))'
 
-# Popup canvas is the fullscreen popup's own tty, not the invoker pane:
-# #{pane_height}/#{pane_width} shrink the grid when opened from a split.
-read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
 read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
 MIN_H=11        # title + 2 bands + mid + footer + frame
 FRAME_W=7       # left/right borders + gutters + title padding
@@ -163,14 +160,27 @@ TITLE_PAD=2     # title rows indent 2 inside the cell
 SB_MIN_X=12     # medallion never overlaps the ' Windows ' stamp
 SB_BORDER_PAD=34  # medallion max width reserve (multi-session arrows)
 SB_SINGLE_PAD=28  # medallion max width reserve (bare name)
-(( H < MIN_H )) && H=MIN_H
-cell_w=$(((W - FRAME_W) / COLS)); ((cell_w < 4)) && cell_w=4
-title_w=$((cell_w - TITLE_PAD)); ((title_w < 2)) && title_w=2
-band_h=$(((H - 9) / VROWS)); ((band_h < 1)) && band_h=1
-snap_h=$((band_h - 1))
-vx=$((TITLE_PAD + cell_w + 1))
-bot_y=$((H - 2))
-mid_y=$((band_h + 3))
+# Canvas size + derived layout. Re-run on SIGWINCH: tmux shrinks the popup
+# when the client loses rows (e.g. a terminal tab bar appearing) and grows
+# it back after, so H/W must track the popup tty, not the launch size.
+compute_geometry() {
+  # Popup canvas is the fullscreen popup's own tty, not the invoker pane:
+  # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
+  read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
+  (( H < MIN_H )) && H=MIN_H
+  cell_w=$(((W - FRAME_W) / COLS)); ((cell_w < 4)) && cell_w=4
+  title_w=$((cell_w - TITLE_PAD)); ((title_w < 2)) && title_w=2
+  band_h=$(((H - 9) / VROWS)); ((band_h < 1)) && band_h=1
+  snap_h=$((band_h - 1))
+  vx=$((TITLE_PAD + cell_w + 1))
+  bot_y=$((H - 2))
+  mid_y=$((band_h + 3))
+}
+compute_geometry
+# The trap only flags: on a tty bash resumes a blocking read after running a
+# trap, so the main loop polls (read -t) and re-lays out on the next tick.
+RESIZED=0
+trap 'RESIZED=1' WINCH
 
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
@@ -821,9 +831,19 @@ jump_win() {
 }
 
 main() {
-local prev k b d j
+local prev k b d j rc
 draw
-while IFS= read -rsn1 k; do
+while :; do
+  IFS= read -rsn1 -t 0.25 k; rc=$?
+  if ((rc)); then
+    ((rc > 128)) || break  # >128 = poll timeout; anything else is EOF
+    ((RESIZED)) || continue
+    # Resize: captures, titles and medallions are truncated to the old cell
+    # size, so drop them like `r` does and repaint at the new geometry.
+    RESIZED=0; compute_geometry
+    SNAP=(); SESS_MED=(); TITLES_DIRTY=1
+    printf '\x1b[2J'; draw; continue
+  fi
   prev=$sel
   if ((confirm_armed)); then
     if [[ $k == $'\x1b' ]]; then

@@ -41,6 +41,13 @@ single-line border plus the script's inset rounded one — and the mid rule stop
 edges. `-T` needs a tmux border, so the script stamps its title into its own top border instead of
 using `-T`. (`/` keeps the tmux border + `-T`; fzf draws no frame.)
 
+Owning the canvas means owning resizes too. tmux shrinks the popup when the client loses rows (a
+Ghostty tab bar appearing) and grows it back after, sending `SIGWINCH`; tmux trims rows off the
+*top* on shrink, so an unhandled resize cuts off the title border. The `WINCH` trap only sets a
+flag — on a tty bash resumes a blocking `read` after a trap — so the main loop polls with
+`read -t 0.25` and, on a flagged tick, recomputes geometry, drops size-dependent caches (captures,
+titles, medallion — all truncated to the old cell size) and does a full redraw.
+
 ## Flicker-free input
 
 Each full paint is buffered into one string and flushed with a single `printf` (~9.5 KB atomic).
