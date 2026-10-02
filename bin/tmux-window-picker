@@ -6,7 +6,7 @@
 #   STATE (globals): SESS_IDS/NAMES/START/COUNT + IDS/TITLES/ALERTS/WIDX/WIN_SESS
 #     arrays, rebuilt by load_data(); SNAP[wid] capture cache keyed by stable
 #     window_id so survivors keep captures across refreshes; SESS_MED medallion
-#     cache keyed by session_id (value "outer"$'\x1f'"inner"$'\x1f'"width");
+#     cache keyed by session_id (value "core"$'\x1f'"width");
 #     sel/sess/top/bar hold cursor/session/page/focus.
 #   LOAD: load_data() re-reads metadata and GCs dead IDs; fault_visible()
 #     faults titles (when TITLES_DIRTY) + missing visible captures +
@@ -23,6 +23,7 @@
 #     the contract: grid focus runs window ops only, bar focus session ops
 #     only — see docs/USAGE.md.
 set -u
+US=$'\x1f'  # internal field separator (non-whitespace IFS keeps empty fields)
 COLS=2; VROWS=2  # Fixed 2x2: mid_y/bot_y and the single mid divider assume VROWS=2.
 
 command -v python3 >/dev/null 2>&1 || { echo "tmux-window-picker needs python3" >&2; exit 1; }
@@ -136,6 +137,9 @@ trunc() { python3 -c "$PY" "$@"; }
 # remains; anything else (tmux-supplied text) falls back to python, so a
 # literal missing here costs a spawn but never mismeasures.
 W1='←→↑↓·⧉│─╭╮╰╯┬┴┼┤├'
+# 1 when bash counts characters (UTF-8 locale), not bytes: gates the
+# pure-bash footer truncation, which slices by character.
+UTF8_CHARS=0; (( ${#W1} == 17 )) && UTF8_CHARS=1
 # Visible width of one line (same east_asian_width rule as PY def vw):
 # strip SGR, count wide→2, combining→0. Script-generated strings (footer,
 # medallion with an ASCII session name, rename prompt) take the pure-bash
@@ -167,7 +171,7 @@ compute_geometry() {
   # Popup canvas is the fullscreen popup's own tty, not the invoker pane:
   # #{pane_height}/#{pane_width} shrink the grid when opened from a split.
   read -r H W < <(stty size 2>/dev/null) 2>/dev/null || read -r H W < <(tmux display-message -p '#{client_height} #{client_width}')
-  (( H < MIN_H )) && H=MIN_H
+  (( H < MIN_H )) && H=$MIN_H
   cell_w=$(((W - FRAME_W) / COLS)); ((cell_w < 4)) && cell_w=4
   title_w=$((cell_w - TITLE_PAD)); ((title_w < 2)) && title_w=2
   band_h=$(((H - 9) / VROWS)); ((band_h < 1)) && band_h=1
@@ -185,7 +189,6 @@ trap 'RESIZED=1' WINCH
 declare -a SESS_IDS SESS_NAMES SESS_START SESS_COUNT
 declare -a IDS TITLES ALERTS WIDX WIN_SESS RAW_TITLES
 declare -A SNAP SESS_MED
-declare -g nsess n
 TITLES_DIRTY=0
 # Rebuild session/window metadata from tmux. Snapshots (SNAP assoc only)
 # are keyed by stable window_id, so surviving cells keep their captures
@@ -197,10 +200,8 @@ TITLES_DIRTY=0
 # SNAP/SESS_MED caches (loop index i and scratch k are local).
 # Returns 1 when no windows remain.
 load_data() {
-  local sid sname wid widx wname wtitle wpath panes alert suffix c k idx
-  local wsid row rest
-  local -A seen
-  local -a WINROWS
+  local sid sname wid widx wname wtitle wpath panes alert suffix c k idx row
+  local -A seen bucket
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
   IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=()
   nsess=0; idx=0
@@ -209,28 +210,23 @@ load_data() {
     SESS_NAMES[$nsess]=$sname
     nsess=$((nsess + 1))
   done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
-  # One batched list-windows -a for all sessions (was one list-windows per
-  # session: 1+nsess tmux round-trips on every open/refresh). Rows regroup
-  # below in list-sessions order, whatever order tmux returns; windows from
-  # sessions born after list-sessions are skipped until the next refresh.
-  # The bell/activity flag field stays last: read with IFS tab drops a
-  # trailing empty field, so nothing significant may follow it.
-  mapfile -t WINROWS < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+  # One batched list-windows -a for all sessions (not one per session), one
+  # pass bucketing rows by session; the loop below regroups them in
+  # list-sessions order, whatever order tmux returns. Windows from sessions
+  # born after list-sessions are skipped until the next refresh. tmux emits
+  # tabs (it octal-escapes \x1f and other controls in -F output), but tab
+  # is IFS whitespace, so read would collapse empty fields (pane_title,
+  # alert flags); retab to \x1f, a non-whitespace IFS that keeps them.
+  while IFS= read -r row; do
+    row=${row//$'\t'/"$US"}
+    bucket[${row%%"$US"*}]+=${row#*"$US"}$'\n'
+  done < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
   for ((k = 0; k < nsess; k++)); do
     sid=${SESS_IDS[$k]}
     SESS_START[$k]=$idx
     c=0
-    for row in ${WINROWS[@]+"${WINROWS[@]}"}; do
-      rest=$row
-      wsid=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      wid=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      widx=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      wname=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      wtitle=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      wpath=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      panes=${rest%%$'\t'*}; if [[ $rest == *$'\t'* ]]; then rest=${rest#*$'\t'}; else rest=""; fi
-      alert=$rest
-      [[ $wsid == "$sid" ]] || continue
+    while IFS=$US read -r wid widx wname wtitle wpath panes alert; do
+      [[ -n $wid ]] || continue
       IDS[$idx]=$wid
       WIDX[$idx]=$widx
       ALERTS[$idx]=$alert
@@ -240,7 +236,7 @@ load_data() {
       if ((panes > 1)); then suffix=" ⧉ $panes"; fi
       RAW_TITLES[$idx]="[$widx] $wname │ $wtitle │ $wpath$suffix"
       idx=$((idx + 1)); c=$((c + 1))
-    done
+    done <<<"${bucket[$sid]-}"
     SESS_COUNT[$k]=$c
   done
   n=$idx
@@ -264,7 +260,8 @@ place_top() {
   local rstart cnt max_top
   rstart=$(( sel - (sel - s0) % COLS ))
   cnt=$((send - s0))
-  max_top=$(( (cnt - 3) / COLS * COLS + s0 ))
+  # Last page whose rows still cover the session's final window.
+  max_top=$(( (cnt - (COLS * VROWS - 1)) / COLS * COLS + s0 ))
   (( max_top < s0 )) && max_top=$s0
   if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
 }
@@ -321,11 +318,34 @@ do_new_window() {
   # the new window in fresh.
   refresh_to sid="$target" wid="$newid"
 }
+# Move the client off the viewed session before it dies, so the popup
+# survives (detach-on-destroy would drop the client with it). Sets
+# LEAVE_SID to the neighbour session (next, else previous) the cursor lands
+# on, and tracks the switch in cur_sid. Caller guarantees nsess > 1.
+leave_session() {
+  if (( sess + 1 < nsess )); then LEAVE_SID=${SESS_IDS[$((sess + 1))]}
+  else LEAVE_SID=${SESS_IDS[$((sess - 1))]}; fi
+  if [[ ${SESS_IDS[$sess]} == "$cur_sid" ]]; then
+    tmux switch-client -t "$LEAVE_SID" 2>/dev/null || return 1
+    cur_sid=$LEAVE_SID
+  fi
+}
+# Session's last window? Killing it destroys the session, so the
+# session-kill rules apply (never the sole session; pre-switch the client).
+last_window() { (( send - s0 == 1 )); }
 # Kill the selected window (grid focus only); stays at the same offset so
-# the next window slides under the cursor (clamped at the end).
+# the next window slides under the cursor (clamped at the end). The last
+# window of a session lands on the neighbour session instead.
 do_kill_window() {
   (( bar )) && return 0
   local target=${SESS_IDS[$sess]} off=$((sel - s0))
+  if last_window; then
+    (( nsess > 1 )) || return 0
+    leave_session || return 0
+    tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
+    refresh_to sid="$LEAVE_SID"
+    return 0
+  fi
   tmux kill-window -t "${IDS[$sel]}" 2>/dev/null || return 0
   refresh_to sid="$target" off="$off"
 }
@@ -343,17 +363,11 @@ do_new_session() {
 # focus, keeping the window offset like kill-window. Pre-switches the
 # client when killing the attached session so the popup survives.
 do_kill_session() {
-  local target=${SESS_IDS[$sess]} fallback="" attached="" off=$((sel - s0))
+  local target=${SESS_IDS[$sess]} off=$((sel - s0))
   (( nsess > 1 )) || return 0
-  if (( sess + 1 < nsess )); then fallback=${SESS_IDS[$((sess + 1))]}
-  else fallback=${SESS_IDS[$((sess - 1))]}; fi
-  attached=$(tmux display-message -p '#{session_id}' 2>/dev/null) || attached=""
-  attached=${attached%% *}  # live reply is one id; other contexts may append the window id
-  if [[ -n $attached && $target == "$attached" ]]; then
-    tmux switch-client -t "$fallback" 2>/dev/null || return 0
-  fi
+  leave_session || return 0
   tmux kill-session -t "$target" 2>/dev/null || return 0
-  refresh_to sid="$fallback" off="$off" bar=1
+  refresh_to sid="$LEAVE_SID" off="$off" bar=1
 }
 # Footer-inline confirm for session kill (bar focus only): X arms the
 # prompt on the footer row (no draw, no cache drop); y/Y commits via
@@ -388,20 +402,33 @@ do_move_window() {
   tmux swap-window -s "$wid" -t "$target" 2>/dev/null || return 0
   refresh_to sid="${SESS_IDS[$sess]}" wid="$wid"
 }
+# Consume the rest of an escape sequence after its ESC byte so the tail
+# bytes never reprocess as keys. Returns 1 for a lone Esc (nothing follows
+# in time). For CSI/SS3 (ESC [ / ESC O) sets ESC_FINAL to the final byte
+# and ESC_PARAM to the bytes before it; Alt+key leaves both empty.
+drain_esc() {
+  local b
+  ESC_FINAL="" ESC_PARAM=""
+  IFS= read -rsn1 -t 0.25 b || return 1
+  [[ $b == '[' || $b == O ]] || return 0
+  while IFS= read -rsn1 -t 0.05 b; do
+    if [[ $b == [A-Za-z~] ]]; then ESC_FINAL=$b; return 0; fi
+    ESC_PARAM+=$b
+  done
+  return 0
+}
 # Rename prompt on the footer row: leaves nav mode, shows the cursor, reads
 # a line char-by-char with manual echo. Enter submits, Backspace erases,
-# lone Esc aborts ("" = keep). Escape sequences are not text: Esc aborts and
-# any trailing bytes reprocess as nav keys. Sets READ_NAME ("" = keep).
+# lone Esc aborts ("" = keep). Escape sequences are not text: they abort
+# too, fully drained (drain_esc). Sets READ_NAME ("" = keep).
 # Called directly (never in $()) so the prompt reaches the popup tty.
 read_name() {
-  local kind=$1 old=$2 ch buf="" maxold prompt prompt_visible buf_visible RENAME_PAD=20 old_stty
-  old_stty=$(stty -g 2>/dev/null || true)
+  local kind=$1 old=$2 ch buf="" maxold prompt prompt_visible buf_visible rename_pad=20
   READ_NAME=""
-  maxold=$((W - RENAME_PAD)); (( maxold < 4 )) && maxold=4
+  maxold=$((W - rename_pad)); (( maxold < 4 )) && maxold=4
   old=$(printf '%s' "$old" | trunc "$maxold")
   at $((H - 1)) 0
   printf '\x1b[?25h'
-  stty -echo -icanon -ixon -iexten min 1 time 0 2>/dev/null || true
   printf 'rename %s [%s]: ' "$kind" "$old"
   prompt="rename $kind [$old]"
   prompt_visible=$(vwidth "$prompt")
@@ -409,6 +436,9 @@ read_name() {
     if [[ -z ${ch:-} || $ch == $'\n' || $ch == $'\r' ]]; then
       break
     elif [[ $ch == $'\x1b' ]]; then
+      # Esc or any escape sequence (arrows, Delete...) aborts; drain the
+      # sequence so its tail bytes never run as picker keys.
+      drain_esc
       buf=""
       break
     elif [[ $ch == $'\x7f' || $ch == $'\b' ]]; then
@@ -428,7 +458,6 @@ read_name() {
     fi
   done
   READ_NAME=$buf
-  [ -n "${old_stty:-}" ] && stty "$old_stty" 2>/dev/null || true
   printf '\x1b[?25l'
 }
 # Rename the selected window (grid focus only); snapshots are keyed by
@@ -439,7 +468,7 @@ do_rename_window() {
   old=$(tmux display-message -p -t "$wid" '#{window_name}' 2>/dev/null) || old=""
   read_name "window" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
-  tmux rename-window -t "$wid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
+  tmux rename-window -t "$wid" -- "$READ_NAME" 2>/dev/null || { draw; return 0; }
   refresh_to sid="$sid" wid="$wid"
 }
 # Rename the viewed session (bar focus only); drops the cached medallion
@@ -451,7 +480,7 @@ do_rename_session() {
   old=${SESS_NAMES[$sess]}
   read_name "session" "$old"
   [[ -z ${READ_NAME:-} || $READ_NAME == "$old" ]] && { draw; return 0; }
-  tmux rename-session -t "$sid" "$READ_NAME" 2>/dev/null || { draw; return 0; }
+  tmux rename-session -t "$sid" -- "$READ_NAME" 2>/dev/null || { draw; return 0; }
   refresh_to sid="$sid" off="$off" bar=1
 }
 
@@ -477,8 +506,8 @@ place_top
 # mapfile -d '' keeps empty blocks aligned (plain mapfile would drop a
 # trailing empty medallion). Subshells cannot write SNAP, so raw (not
 # truncated) captures stage through files. The footer stays out of the batch:
-# its char length pre-check (paint_footer) usually avoids a spawn, and a
-# per-row keypress path (trunc_footer_direct) must not pay a batch round-trip.
+# it truncates in pure bash (footer_line), and the per-keypress paint_row
+# path must not pay a batch round-trip.
 fault_visible() {
   local e=$((top + COLS * VROWS)) k wid key nmiss=0 bi row
   local -a MW=()
@@ -509,7 +538,8 @@ fault_visible() {
     done
     wait
   fi
-  { printf '%s\n' "${RAW_TITLES[@]}"
+  # Titles block stays empty unless dirty: clean titles are already cached.
+  { if (( TITLES_DIRTY )); then printf '%s\n' "${RAW_TITLES[@]}"; fi
     for row in ${MW[@]+"${MW[@]}"}; do
       key=${row#*:}
       printf '\0'
@@ -585,46 +615,47 @@ paint_row() {
 # ' Windows ' stamp and the corners. Focus keeps the same footprint: the
 # outer 2 cells stay normal-video gap, only the inner core reverses, so the
 # border length never changes with focus.
-# Batch path: assembles outer/inner in pure bash from the batch-truncated
-# name; the batch already measured the name width, so no vwidth spawn.
+# Batch path: assembles the core in pure bash from the batch-truncated
+# name; the batch already measured the outer width, so no vwidth spawn.
 cache_medallion() {
-  local sid=${SESS_IDS[$sess]} nm mlen outer inner
-  nm=${1%%$'\n'*}; mlen=${1#*$'\n'}
-  if (( nsess > 1 )); then outer="  ←  $nm  →  "; else outer="  $nm  "; fi
-  inner=${outer:2:${#outer} - 4}
-  SESS_MED[$sid]="$outer"$'\x1f'"$inner"$'\x1f'"$mlen"
+  local nm=${1%%$'\n'*} mlen=${1#*$'\n'} core
+  if (( nsess > 1 )); then core="←  $nm  →"; else core=$nm; fi
+  SESS_MED[${SESS_IDS[$sess]}]="$core$US$mlen"
 }
 # The early return in fault_visible() covers the cache-hit path: a dropped
 # entry rides the batch, so no separate fault is needed.
-# Split the SESS_MED[sid] triple into sbar/sinner/sblen globals.
+# Split the SESS_MED[sid] pair into draw()'s sinner/sblen locals.
 split_medallion() {
-  IFS=$'\x1f' read -r sbar sinner sblen <<<"${SESS_MED[${SESS_IDS[$sess]}]}"
+  IFS=$US read -r sinner sblen <<<"${SESS_MED[${SESS_IDS[$sess]}]}"
 }
 # Footer is the contract: every working key for the current focus is listed,
 # nothing unlisted works. Grid rows show window ops only (c = window,
 # X = window); the bar shows session ops only (N = session, X = session).
 footext() {
-  local rel=$((top - s0)) cnt=$((send - s0)) hi lo
+  local rel=$((top - s0)) cnt=$((send - s0)) hi lo kill=' · X kill'
   hi=$((rel + 1)); lo=$((rel + COLS * VROWS)); ((lo > cnt)) && lo=$cnt
+  # Sole window of the sole session: X is refused, so it is not listed.
+  if last_window && ((nsess == 1)); then kill=''; fi
   if ((bar)); then
     if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
     else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
-  else printf '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window · X kill · r refresh · q/Esc quit · %d-%d/%d' "$hi" "$lo" "$cnt"; fi
+  else printf '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window%s · r refresh · q/Esc quit · %d-%d/%d' "$kill" "$hi" "$lo" "$cnt"; fi
 }
-# Render the footer row: truncate footext() to canvas width. The footer is
-# near-ASCII, so skip the python truncation spawn when it already fits.
-foot_trunc() {
-  local text fw
-  text=$(cat)
-  if ((${#text} <= W)) && [[ $text != *$'\x1b'* ]]; then
-    fw=$(vwidth "$text")
-    if ((fw <= W)); then printf '%s' "$text"; return 0; fi
+# Footer row text truncated to canvas width. footext() is ASCII plus W1
+# glyphs, all width 1, so a character slice is exact and no python spawns
+# on keypresses; trailing spaces trim like trunc_line. Byte-counting (non
+# UTF-8) locales fall back to the python helper.
+footer_line() {
+  local text
+  text=$(footext)
+  if ((UTF8_CHARS)); then
+    text=${text:0:W}
+    printf '%s' "${text%"${text##*[! ]}"}"
+  else
+    printf '%s' "$text" | trunc "$W" | tr -d '\n'
   fi
-  printf '%s' "$text" | trunc "$W" | tr -d '\n'
 }
-paint_footer() {
-  local text; text=$(footext); put $((H - 1)) 0 "$(printf '%s' "$text" | foot_trunc)"
-}
+paint_footer() { put $((H - 1)) 0 "$(footer_line)"; }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
 switch_sess() {
@@ -754,14 +785,18 @@ draw() {
   hborder 0 '╭' '╮' "${occ4[0]}" "${occ4[1]}" '┬' '╮' '╭'
   nput 0 2 ' Windows '
   split_medallion
-  sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=SB_MIN_X
+  sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=$SB_MIN_X
   if (( sbx + sblen > W - 1 )); then sbx=$((W - 1 - sblen)); fi
-  if (( sbx < 1 )); then sbx=1; sbar=$(printf '%s' "$sbar" | trunc "$((W - 2))"); sblen=$((W - 2)); fi
-  if ((bar)); then
-    # Same footprint focused or not: outer 2 stay normal-video gap, only the
-    # inner core reverses, so the border length never changes with focus.
-    printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$sinner"
+  if (( sbx < 1 )); then
+    # Canvas narrower than the medallion: shrink the core so gap + core +
+    # gap fits between the corners (focused or not).
+    sbx=$((W - 6)); ((sbx < 1)) && sbx=1
+    sinner=$(printf '%s' "$sinner" | trunc "$sbx")
+    sblen=$((4 + $(vwidth "$sinner"))); sbx=1
   fi
+  # Same footprint focused or not: outer 2 stay normal-video gap, only the
+  # inner core reverses, so the border length never changes with focus.
+  if ((bar)); then printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$sinner"; else sbar="  $sinner  "; fi
   nput 0 "$sbx" "$sbar"
   paint_gutters
   if (( occ4[0] && occ4[2] )); then seg='├'
@@ -826,12 +861,14 @@ jump_win() {
   local j=$1 wsess
   wsess=${WIN_SESS[$j]}
   [[ $wsess != "$cur_sid" ]] && tmux switch-client -t "$wsess" 2>/dev/null
-  tmux select-window -t "${IDS[$j]}"
+  # Session-qualified: a window linked into several sessions resolves in
+  # this occurrence's session, not whichever one tmux deems best.
+  tmux select-window -t "$wsess:${IDS[$j]}"
   exit 0
 }
 
 main() {
-local prev k b d j rc
+local prev k b j rc
 draw
 while :; do
   IFS= read -rsn1 -t 0.25 k; rc=$?
@@ -849,8 +886,7 @@ while :; do
     if [[ $k == $'\x1b' ]]; then
       # Consume the rest of any escape sequence so its bytes don't
       # reprocess as nav keys; lone Esc aborts instead of quitting.
-      IFS= read -rsn1 -t 0.25 b || { confirm_armed=0; draw; continue; }
-      if [[ $b == '[' ]]; then IFS= read -rsn1 -t 0.25 d || true; fi
+      drain_esc
       confirm_armed=0; draw; continue
     elif [[ $k == [yY] ]]; then
       confirm_armed=0; do_kill_session; continue
@@ -859,11 +895,10 @@ while :; do
     fi
   fi
   if [[ $k == $'\x1b' ]]; then
-    IFS= read -rsn1 -t 0.25 b || break
-    [[ $b == '[' ]] || continue
-    IFS= read -rsn1 -t 0.25 d || continue
-    case $d in
-      [0-9]) while [[ $d != [A-Za-z~] ]]; do IFS= read -rsn1 -t 0.05 d || break; done; continue ;;
+    drain_esc || break  # lone Esc quits
+    # Modified keys (ESC[1;5A ...) and Alt+key are ignored.
+    [[ -z $ESC_PARAM ]] || continue
+    case $ESC_FINAL in
       A) nav_up && continue ;;
       B) nav_down && continue ;;
       C) nav_right && continue ;;
@@ -875,9 +910,7 @@ while :; do
     # never fire here. Drop the key after it (and any escape sequence it
     # starts) so prefix habits like C-b c / C-b X don't run picker actions.
     IFS= read -rsn1 b || break
-    if [[ $b == $'\x1b' ]] && IFS= read -rsn1 -t 0.05 b && [[ $b == '[' ]]; then
-      while IFS= read -rsn1 -t 0.05 d && [[ $d != [A-Za-z~] ]]; do :; done
-    fi
+    [[ $b == $'\x1b' ]] && drain_esc
     continue
   elif [[ -z $k || $k == $'\n' ]]; then
     if ((bar)); then tmux switch-client -t "${SESS_IDS[$sess]}"; exit 0; fi
@@ -889,7 +922,6 @@ while :; do
     for ((j = s0; j < send; j++)); do
       if [[ ${WIDX[$j]} == "$k" ]]; then
         jump_win "$j"
-        break
       fi
     done
   # WASD shares the nav_* helpers with the arrow keys (single source).
@@ -940,7 +972,7 @@ while :; do
       paint_row $(((sel - top) / COLS))
     fi
     # Direct write (not put): FRAME is only flushed in draw().
-    at $((H - 1)) 0; footext | foot_trunc
+    at $((H - 1)) 0; footer_line
   else
     while ((sel < top)); do top=$((top - COLS)); done
     while ((sel > top + COLS * VROWS - 1)); do top=$((top + COLS)); done

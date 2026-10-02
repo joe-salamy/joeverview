@@ -20,9 +20,9 @@ Each cell: `[index] name │ task │ path` title (+ `⧉ N` when the window hol
 | `0`-`9` | jump to the window with that index in this session (no match = ignore) |
 | `Enter` | jump to the selected window |
 | `c` | **new window** in the viewed session (cursor lands on it, grid stays open) |
-| `R` | rename the selected window (empty input or `Esc` keeps the old name) |
+| `R` | rename the selected window (empty input, `Esc`, or any arrow/special key keeps the old name) |
 | `<` / `>` | **move** the selected window one slot left / right within the session (cursor follows the moved window) |
-| `X` | kill the selected window |
+| `X` | kill the selected window (a session's last window takes the session with it: the client moves to the neighbour session first; refused — and unlisted — for the sole window of the sole session) |
 | `r` | refresh snapshots |
 | `q` / `Esc` | cancel |
 
@@ -35,7 +35,7 @@ Session ops only — window keys (`c`, `0`-`9`, `<>`) do nothing here. `↓`/`s`
 | `←`/`→` (or `a`/`d`) | switch session (several sessions only) |
 | `Enter` | attach to the viewed session |
 | `N` | **new session** (grid lands on it, bar stays focused) |
-| `R` | rename the viewed session (empty input or `Esc` keeps the old name) |
+| `R` | rename the viewed session (empty input, `Esc`, or any arrow/special key keeps the old name) |
 | `X` | kill the viewed session: asks `Kill session <name> (N windows)? y/N` on the footer row — `y` kills, anything else (including `Esc`) cancels and stays open (disabled when it's the only session — that would strand the client) |
 | `r` | refresh snapshots |
 | `q` / `Esc` | cancel |

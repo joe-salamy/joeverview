@@ -78,13 +78,16 @@ geometry and the arm-aware frame (junctions close with corners) are unchanged; b
 from global `n` to the visible session's `[s0, send)`. Up from the top grid row focuses the bar
 (always, even single-session), Left/Right pages (reset to the session's first page, full `draw` —
 the only bar painter, so no partial-repaint desync), Down returns, Enter attaches (`switch-client`)
-or jumps (`switch-client` + `select-window -t @id` when the window lives elsewhere). Titles carry `⧉
+or jumps (`switch-client` when the window lives elsewhere, then `select-window -t $sid:@id` —
+session-qualified so a window linked into several sessions resolves in the one being viewed). Titles carry `⧉
 N` from `#{window_panes}` when N>1; the body stays the active-pane capture, so exact-pane work stays
 on jumping to the pane.
 
-Field-order trap that bit: `read` with `IFS=$'\t'` treats tab as IFS whitespace, so an empty field
-collapses and later fields shift left. The bell/activity flag field is empty most of the time, so it
-must stay last — `#{window_panes}` (never empty) goes before it.
+Field-separator trap that bit: `read` with `IFS=$'\t'` treats tab as IFS whitespace, so an empty
+field (`#{pane_title}`, the bell/activity flags) collapses and later fields shift left. The picker
+rewrites each row's tabs to `\x1f` and reads with that non-whitespace `IFS`, which keeps empty fields
+in place. (Asking tmux for `\x1f` directly does not work: `-F` output octal-escapes control
+characters, so the separator arrives as the literal text `\037`.)
 
 The switcher renders as a padded medallion (`  ←  name  →  `, `  name  ` when single)
 so the arrows clear the border dashes. With a single session Left/Right and kill are hidden —
@@ -98,10 +101,14 @@ Grid focus runs window ops only (`c` new window, `X` window, `<>` move, `R` rena
 focus runs session ops only (`N` new session, `X` session, `R` rename session). The footer is the
 contract — every key it lists works, every working key is listed (per-focus; letter case is folded
 except `x`, and `r`≠`R`). `X` on a sole session is refused: killing the last session would strand
-the client. Session kill arms a footer-inline `y/N` confirm (same row rename uses): `X` paints the
+the client. Killing a session's last window from the grid destroys the session, so it follows the same rules:
+refused for the sole window of the sole session (and dropped from the footer), and the client is
+moved to the neighbour session first when it is attached there. Session kill arms a footer-inline `y/N` confirm (same row rename uses): `X` paints the
 prompt with no `draw` and no cache drop, `y` commits through `do_kill_session`, anything else
 (arrows included — their escape bytes are consumed) redraws unchanged, and lone `Esc` aborts instead
 of quitting. Rename drops out of raw nav mode into a char-by-char `read_name` loop on the footer row
-(never in `$()` so the prompt reaches the popup tty); empty input or `Esc` redraws unchanged.
+(never in `$()` so the prompt reaches the popup tty); empty input or `Esc` redraws unchanged. Any
+escape sequence (arrows, Delete…) also aborts, and `drain_esc` consumes its tail — otherwise the
+`C` of a Right arrow would run as `c` (new window) and the `3` of Delete as a digit jump.
 Session rename also drops the cached medallion (`SESS_MED`); window rename keeps the snapshot cache
 (keyed by stable `@id`) while titles rebuild in `refresh_to`.

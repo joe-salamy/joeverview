@@ -40,20 +40,14 @@ case "$cmd" in
     cat "$FIXDIR/sessions"
     ;;
   list-windows)
-    if [[ " $* " == *" -a "* ]]; then
-      # Batched query: prefix each session's fixture rows with its sid, in
-      # sessions-file order like tmux groups list-windows -a. IFS= keeps
-      # the trailing empty alert field byte-identical to the -t path.
-      while IFS=$'\t' read -r sid _rest; do
-        key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-        [[ -f "$FIXDIR/windows_$key" ]] || continue
-        while IFS= read -r line; do printf '%s\t%s\n' "$sid" "$line"; done < "$FIXDIR/windows_$key"
-      done < "$FIXDIR/sessions"
-    else
-      sid=$(get_t "$@")
+    # Batched list-windows -a: prefix each session's fixture rows with its
+    # sid, in sessions-file order like tmux. Tab-separated like real tmux
+    # (which octal-escapes \x1f in -F output, so the picker cannot ask for it).
+    while IFS=$'\t' read -r sid _rest; do
       key=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_')
-      cat "$FIXDIR/windows_$key"
-    fi
+      [[ -f "$FIXDIR/windows_$key" ]] || continue
+      while IFS= read -r line; do printf '%s\t%s\n' "$sid" "$line"; done < "$FIXDIR/windows_$key"
+    done < "$FIXDIR/sessions"
     ;;
   capture-pane)
     if [[ -n ${CAP_EMPTY:-} ]]; then printf ''; exit 0; fi
@@ -159,7 +153,7 @@ tail -c 1024 "$T/out-c" | grep -qF "$SEL0" && fail "arrow-move stale-select"
 # (d) six fed 2 selects @w2
 : > "$T/calls-d"
 run_picker six '2' "$T/out-d" "$T/calls-d"
-grep -qF 'select-window -t @w2' "$T/calls-d" || fail "digit-jump log"
+grep -qF 'select-window -t $s0:@w2' "$T/calls-d" || fail "digit-jump log"
 
 # (e) six fed 4x Down pages to index 5
 run_picker six '\x1b[B\x1b[B\x1b[B\x1b[Bq' "$T/out-e"
@@ -213,12 +207,12 @@ grep -qF 'Kill session' "$T/out-j" && fail "sole-session prompted"
 # (k) n2 fed Rname+Enter renames the selected window
 : > "$T/calls-k"
 run_picker n2 'Rwin-new\nq' "$T/out-k" "$T/calls-k"
-grep -qF 'rename-window -t @w0 win-new' "$T/calls-k" || fail "rename-window log"
+grep -qF 'rename-window -t @w0 -- win-new' "$T/calls-k" || fail "rename-window log"
 
 # (l) multi fed Up+Rname+Enter renames the viewed session
 : > "$T/calls-l"
 run_picker multi '\x1b[ARsess-new\nq' "$T/out-l" "$T/calls-l"
-grep -qF 'rename-session -t $s0 sess-new' "$T/calls-l" || fail "rename-session log"
+grep -qF 'rename-session -t $s0 -- sess-new' "$T/calls-l" || fail "rename-session log"
 
 # (m) n2 fed R+Esc aborts the rename (no rename-window call, q quits)
 : > "$T/calls-m"
@@ -269,7 +263,7 @@ printf '$s0\tmain\n$s1\tother\n' > "$T/dyn-r/sessions"
 printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-r/windows_s0"
 printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$T/dyn-r/windows_s1"
 CUR_SID='$s0' CUR_WID='@w0' STUB_W=140 run_dynamic r '\x1b[ARnewname\nq' "$T/out-r" "$T/calls-r"
-grep -qF 'rename-session -t $s0 newname' "$T/calls-r" || fail "rename-session log"
+grep -qF 'rename-session -t $s0 -- newname' "$T/calls-r" || fail "rename-session log"
 grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
 grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
 tail -c 8192 "$T/out-r" | grep -qF "$(printf '  \x1b[7m←  newname  →\x1b[0m  ')" || fail "rename new name highlighted"
@@ -318,9 +312,44 @@ CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw 'q' "$T/out-lw" "$T/calls-
 grep -qF '←  B  →' "$T/out-lw" || fail "linked medallion shows viewed session"
 grep -qF "$(printf '\x1b[7m[0]')" "$T/out-lw" || fail "linked highlights viewed occurrence"
 CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw '\n' "$T/out-lw2" "$T/calls-lw2"
-grep -qF 'select-window -t @w0' "$T/calls-lw2" || fail "linked enter selects window"
+grep -qF 'select-window -t $s1:@w0' "$T/calls-lw2" || fail "linked enter selects window"
 grep -qF 'switch-client -t $s0' "$T/calls-lw2" && fail "linked enter hit other session"
 grep -qF 'switch-client' "$T/calls-lw2" && fail "linked enter switched while attached"
+
+# (w) escape sequences in the rename prompt abort it without their tail
+# bytes running as picker keys (ESC[C's C = new-window, ESC[3~'s 3 = jump)
+: > "$T/calls-w"
+run_picker n4 'R\x1b[Cq' "$T/out-w" "$T/calls-w"
+grep -qE 'new-window|rename-window' "$T/calls-w" && fail "rename arrow leaked"
+: > "$T/calls-w2"
+run_picker n4 'R\x1b[3~q' "$T/out-w2" "$T/calls-w2"
+grep -qE 'select-window|rename-window' "$T/calls-w2" && fail "rename delete leaked"
+# SS3 arrows (ESC O C) navigate like CSI ones
+run_picker n4 '\x1bOCq' "$T/out-w3"
+tail -c 1024 "$T/out-w3" | grep -qF "$SEL1" || fail "ss3 arrow-move"
+
+# (x) X on a session's last window: pre-switch the attached client to the
+# neighbour session, then kill; never on the sole window of the sole session
+mkdir -p "$T/dyn-x"
+printf '$s0\tA\n$s1\tB\n' > "$T/dyn-x/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-x/windows_s0"
+printf '@w1\t0\twin1\tt1\t/tmp/w1\t1\t\n' > "$T/dyn-x/windows_s1"
+CUR_SID='$s0' CUR_WID='@w0' run_dynamic x 'Xq' "$T/out-x" "$T/calls-x"
+grep -qF 'switch-client -t $s1' "$T/calls-x" || fail "last-window preswitch"
+grep -qF 'kill-window -t @w0' "$T/calls-x" || fail "last-window kill"
+sw=$(grep -nF 'switch-client' "$T/calls-x" | head -1 | cut -d: -f1)
+kw=$(grep -nF 'kill-window' "$T/calls-x" | head -1 | cut -d: -f1)
+(( sw < kw )) || fail "last-window preswitch order"
+# viewing another session's last window: kill without moving the client
+CUR_SID='$s1' CUR_WID='@w1' run_dynamic x '\x1b[A\x1b[D\x1b[BXq' "$T/out-x2" "$T/calls-x2"
+grep -qF 'kill-window -t @w0' "$T/calls-x2" || fail "other-session last-window kill"
+grep -qF 'switch-client' "$T/calls-x2" && fail "other-session last-window switched"
+: > "$T/calls-x3"
+STUB_W=200 run_picker n1 'Xq' "$T/out-x3" "$T/calls-x3"
+grep -qF 'kill-window' "$T/calls-x3" && fail "sole-window killed"
+grep -qF 'X kill' "$T/out-x3" && fail "sole-window footer lists X"
+STUB_W=200 run_picker n2 'q' "$T/out-x4"
+grep -qF 'X kill' "$T/out-x4" || fail "footer lists X"
 
 # bounds_check <file> <H> <W>: every CUP address is inside the canvas and the
 # final footer payload (bytes after the last footer-row EL) is one line <= W.
