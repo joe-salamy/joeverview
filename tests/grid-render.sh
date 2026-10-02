@@ -2,7 +2,7 @@
 # grid-render harness: stub-tmux golden + interaction checks for bin/tmux-window-picker.
 # Goldens are byte-exact; bless with UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 only after eyeballing the diff; never commit a bless alongside a behavior change.
 # UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 re-blesses five q-only goldens (n1-n4, multi) plus two geometry goldens in (t)/(u).
-# Label (b) is intentionally skipped. CI fails on a dirty tree so an accidental bless is loud.
+# Label (b) is intentionally skipped. CI (smoke.sh) fails on a dirty tree so an accidental bless is loud.
 # No live tmux server needed. Stub defaults to 30x60 geometry (cell_w=26,
 # title_w=24, band_h=10, snap_h=9, vx=29, bot_y=28, mid_y=13); STUB_H/STUB_W
 # in the environment override the stub canvas (small-geometry cases (t)/(u)).
@@ -95,41 +95,34 @@ STUB
   chmod +x "$1/bin/tmux"
 }
 
-# run_picker <fixture> <printf-%b-input> <outfile> [call_log]
-# Copies the fixture to temp so stub mutations (new/kill/rename) never dirty the repo.
-run_picker() {
-  local fix=$1 input=$2 out=$3 log=${4:-/dev/null}
-  local r fdir st
+# run_in <fixdir> <label> <printf-%b-input> <outfile> <call_log>: the one
+# stub + env + run prelude. Hook env (CUR_SID/CUR_WID/STUB_H/STUB_W/
+# CAP_EMPTY/ON_NEW_*) passes through from callers' inline assignments and
+# is otherwise pinned empty, so the outer shell's environment never leaks.
+run_in() {
+  local fdir=$1 label=$2 input=$3 out=$4 log=$5 r st
   r=$(mktemp -d "$T/run.XXXXXX")
-  fdir=$(mktemp -d "$T/fix.XXXXXX")
-  cp -r "$FIXBASE/$fix/." "$fdir/"
-  mk_stub "$r"
-  : > "$r/err"
-  STUB_H="${STUB_H:-}" STUB_W="${STUB_W:-}" FIXDIR="$fdir" CALL_LOG="$log" PATH="$r/bin:$PATH" \
-    bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
-    "$input" "$REPO" "$out" "$r/err"
-  st=$?; (( st == 0 )) || fail "picker exit $st ($fix)"
-  [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr ($fix)"; }
-}
-
-# run_dynamic <tag> <printf-%b-input> <outfile> <call_log> — dynamic-fixture
-# runner sharing run_picker's stub/env-run prelude. Caller prepares $T/dyn-<tag>
-# contents first; hook env (CUR_SID/CUR_WID/STUB_H/STUB_W/CAP_EMPTY/ON_NEW_*)
-# passes through like run_picker's callers set it inline.
-run_dynamic() {
-  local tag=$1 input=$2 out=$3 log=$4
-  local r st
-  r=$(mktemp -d "$T/run-$tag.XXXXXX")
   mk_stub "$r"
   : > "$log"; : > "$r/err"
   STUB_H="${STUB_H:-}" STUB_W="${STUB_W:-}" CUR_SID="${CUR_SID:-}" CUR_WID="${CUR_WID:-}" \
   CAP_EMPTY="${CAP_EMPTY:-}" ON_NEW_WINDOW="${ON_NEW_WINDOW:-}" ON_NEW_SESSION="${ON_NEW_SESSION:-}" \
-  FIXDIR="$T/dyn-$tag" CALL_LOG="$log" PATH="$r/bin:$PATH" \
+  FIXDIR="$fdir" CALL_LOG="$log" PATH="$r/bin:$PATH" \
     bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
     "$input" "$REPO" "$out" "$r/err"
-  st=$?; (( st == 0 )) || fail "picker exit $st (dyn-$tag)"
-  [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr (dyn-$tag)"; }
+  st=$?; (( st == 0 )) || fail "picker exit $st ($label)"
+  [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr ($label)"; }
 }
+# run_picker <fixture> <printf-%b-input> <outfile> [call_log]
+# Copies the fixture to temp so stub mutations (new/kill/rename) never dirty the repo.
+run_picker() {
+  local fdir
+  fdir=$(mktemp -d "$T/fix.XXXXXX")
+  cp -r "$FIXBASE/$1/." "$fdir/"
+  run_in "$fdir" "$1" "$2" "$3" "${4:-/dev/null}"
+}
+# run_dynamic <tag> <printf-%b-input> <outfile> <call_log> — runs against
+# $T/dyn-<tag>, which the caller prepares (and may reuse across runs).
+run_dynamic() { run_in "$T/dyn-$1" "dyn-$1" "$2" "$3" "$4"; }
 
 # (a) q-only goldens for n1-n4 + multi
 for name in n1 n2 n3 n4 multi; do

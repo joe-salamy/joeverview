@@ -23,6 +23,9 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/jv-smoke.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 SMOKE_CONF="$T/smoke-tmux.conf"
 printf 'source-file "%s"\n' "$REPO/tmux/joeverview.conf" > "$SMOKE_CONF"
+# Kill any server left on the socket by an aborted run first: -f is only
+# read at server start, so a stale server would report stale bindings.
+tmux -L joeverview-smoke kill-server 2>/dev/null || true
 KEYS="$(tmux -L joeverview-smoke -f "$SMOKE_CONF" new-session -d -x 172 -y 41 \; list-keys \; kill-server 2>/dev/null)"
 echo "$KEYS" | grep -qE 'bind-key +-T prefix +o +.*display-popup +-BE?.*tmux-window-picker' \
   && echo "OK   prefix o (borderless grid)" || { echo "FAIL prefix o"; fail=1; }
@@ -32,6 +35,8 @@ echo "$KEYS" | grep -qE 'bind-key +-T prefix +/ +.*tmux-content-search' \
 # Grid render goldens + interactions (stub-tmux, no live server).
 if bash "$REPO/tests/grid-render.sh"; then echo "OK   grid-render"; else echo "FAIL grid-render"; fail=1; fi
 if bash "$REPO/tests/content-search.sh"; then echo "OK   content-search"; else echo "FAIL content-search"; fail=1; fi
-if [ -n "$(git -C "$REPO" status --porcelain)" ]; then echo "FAIL dirty tree"; fail=1; fi
+# CI only: a stray golden bless must not pass unnoticed, but locally this
+# runs on uncommitted edits by design.
+if [ -n "${CI:-}" ] && [ -n "$(git -C "$REPO" status --porcelain)" ]; then echo "FAIL dirty tree"; fail=1; fi
 if [ "$fail" -eq 0 ]; then echo "smoke: PASS"; else echo "smoke: FAIL"; fi
 exit "$fail"
