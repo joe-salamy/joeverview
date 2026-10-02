@@ -8,10 +8,6 @@ One companion rounds it out: `prefix /` searches scrollback contents across all 
 
 Built for a single-session tmux with `renumber-windows on` and zero-based indexes, but nothing depends on that.
 
-## Demo
-
-![window grid overview](docs/demo.gif)
-
 ## Install
 
 ```sh
@@ -52,7 +48,7 @@ Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DES
 ~/Code/joeverview/uninstall.sh
 ```
 
-Removes the `~/.local/bin` symlinks only if they still point at this checkout, drops the `source-file` line from `~/.tmux.conf` (backing it up first), and reloads tmux. Your windows, sessions, and the repo itself are untouched — delete the clone afterwards if you want it gone.
+Removes the `~/.local/bin` symlinks only if they still point at this checkout, drops the `source-file` line from `~/.tmux.conf` (backing it up first, and restoring any binds the installer retired), puts tmux's stock `prefix o`/`prefix /` back, and reloads tmux. Your windows, sessions, and the repo itself are untouched — delete the clone afterwards if you want it gone.
 
 ## Layout
 

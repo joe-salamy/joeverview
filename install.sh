@@ -12,10 +12,10 @@ SNIPPET="$REPO/tmux/joeverview.conf"
 for cmd in tmux python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "joeverview: needs '$cmd' — please install it first" >&2; exit 1; }
 done
-tmux_v="$(tmux -V | awk '{print $2}')"
-# Portable >=3.4 check (no GNU sort -V): numeric compare on major/minor.
-# shellcheck disable=SC2086 # unquoted $tmux_v intended for word-splitting
-set -- $tmux_v; tmux_maj=${1%%.*}; tmux_min=${1#*.}; tmux_min=${tmux_min%%[^0-9]*}
+# Portable >=3.4 check (no GNU sort -V): first major.minor in `tmux -V`,
+# so `tmux 3.4a`, `tmux next-3.6` and `tmux openbsd-7.5` all parse.
+tmux_maj=0 tmux_min=0
+read -r tmux_maj tmux_min < <(tmux -V | sed -nE 's/^[^0-9]*([0-9]+)\.([0-9]+).*/\1 \2/p') || true
 if ! { [ "${tmux_maj:-0}" -gt 3 ] || { [ "${tmux_maj:-0}" -eq 3 ] && [ "${tmux_min:-0}" -ge 4 ]; }; } 2>/dev/null; then
   echo "joeverview: needs tmux 3.4+ (display-popup) — found: $(tmux -V)" >&2
   exit 1
@@ -48,12 +48,14 @@ if [ -f "$TMUX_CONF" ]; then
     cp -p "$TMUX_CONF" "$TMUX_CONF.bak-$(date +%Y%m%d%H%M%S)"
     awk -v snippet="$SNIPPET" '
       BEGIN { inserted=0 }
-      /^[[:space:]]*#?[[:space:]]*(set -g @joeverview_bin|source-file).*joeverview/ { next }
+      /^[[:space:]]*#?[[:space:]]*source-file.*joeverview/ { next }
       /^bind-key +(-T +[^ ]+ +)?[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
       /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
       { print }
       END { if (!inserted) print "source-file \"" snippet "\"" }
-    ' "$TMUX_CONF" > "$TMUX_CONF.tmp" && mv "$TMUX_CONF.tmp" "$TMUX_CONF"
+    ' "$TMUX_CONF" > "$TMUX_CONF.tmp"
+    # Write through (not mv): keeps a dotfiles symlink and the file's mode.
+    cat "$TMUX_CONF.tmp" > "$TMUX_CONF" && rm -f "$TMUX_CONF.tmp"
     echo "wired source-file into $TMUX_CONF"
   fi
 else
@@ -61,7 +63,8 @@ else
   echo "created $TMUX_CONF"
 fi
 
-# 3. Reload the live server if there is one.
-if tmux info >/dev/null 2>&1; then
+# 3. Reload the live server if there is one (has-session, not info: info
+#    fails with "no current client" on a server with no attached client).
+if tmux has-session >/dev/null 2>&1; then
   tmux source-file "$TMUX_CONF" && echo "tmux reloaded"
 fi
