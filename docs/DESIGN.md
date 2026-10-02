@@ -31,7 +31,7 @@ mid-character. The grid embeds a ~40-line python helper via `python3 -c "$PY"` (
 swallow the capture pipe on stdin): strips OSC hyperlinks, keeps SGR sequences atomic, counts
 `east_asian_width`, appends reset. `LC_ALL=C.UTF-8` does not fix `cut`.
 
-The fzf search (`/`) uses `--ansi --preview-window=…:nowrap` instead — same idea, delegated to fzf.
+The fzf search (`/`) delegates to fzf instead: rows are plain text (`capture-pane` without `-e`), and the colored preview uses `--preview-window=…:nowrap`.
 
 ## The script owns the canvas (`-B`)
 

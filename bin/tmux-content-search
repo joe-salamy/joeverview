@@ -8,24 +8,24 @@
 # tmux query splits pane id on the first space; fzf rows use \x1f with field 1 %id (hidden), field 2 context, field 3 line.
 set -u
 command -v fzf >/dev/null 2>&1 || { echo "tmux-content-search needs fzf" >&2; exit 1; }
-LINES=500
+DEPTH=500  # scrollback lines per pane (not LINES: bash's terminal-height var)
 SEP=$'\x1f'
 # fzf preview stays sed (grid uses python; preview must stay fast) — do not unify into python.
 PANES=$(tmux list-panes -a -F "#{pane_id} #{session_name}:#{window_index}:#{window_name}")
+# One awk per pane prefixes rows and drops blank lines (NF=0); the prefix
+# goes via ENVIRON because awk -v would interpret backslashes in names.
 MATCH=$(while read -r p ctx; do
   [ -z "${p:-}" ] && continue
-  tmux capture-pane -p -S -$LINES -t "$p" 2>/dev/null | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
-    printf '%s%s%s%s%s\n' "$p" "$SEP" "$ctx │" "$SEP" "$line"
-  done
-done <<<"$PANES" | fzf --ansi --reverse --border --height=100% \
+  tmux capture-pane -p -S -$DEPTH -t "$p" 2>/dev/null |
+    ROW_PREFIX="$p$SEP$ctx │$SEP" awk 'NF { print ENVIRON["ROW_PREFIX"] $0 }'
+done <<<"$PANES" | fzf --reverse --border --height=100% \
   --delimiter="$SEP" \
   --with-nth=2.. \
   --prompt='grep> ' \
-  --header="enter=jump-to-pane  ctrl-y=yank-line  (fuzzy over last $LINES lines per pane)" \
+  --header="enter=jump-to-pane  ctrl-y=yank-line  (fuzzy over last $DEPTH lines per pane)" \
   --preview="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//'" \
   --preview-window='right:60%:nowrap' \
   --bind='ctrl-y:execute-silent(tmux set-buffer -- {3..})') || exit 0
-[ -z "${MATCH:-}" ] && exit 0
 TARGET_ID=${MATCH%%"$SEP"*}
 # Cross-session parity with the window grid's jump_win: select-pane alone
 # leaves the client behind when the pane lives in another session.
@@ -35,5 +35,6 @@ P_IDS=$(tmux display-message -p -t "$TARGET_ID" '#{session_id} #{window_id}' 2>/
 P_SESS=${P_IDS%% *}; P_WIN=${P_IDS##* }
 CUR_SESS=$(tmux display-message -p '#{session_id}' 2>/dev/null)
 if [[ -n ${P_SESS:-} && ${P_SESS:-} != "${CUR_SESS:-}" ]]; then tmux switch-client -t "$P_SESS" 2>/dev/null; fi
-if [[ -n ${P_WIN:-} ]]; then tmux select-window -t "$P_WIN" 2>/dev/null; fi
+# Session-qualified like the grid: a linked window resolves in P_SESS.
+if [[ -n ${P_WIN:-} ]]; then tmux select-window -t "$P_SESS:$P_WIN" 2>/dev/null; fi
 tmux select-pane -t "$TARGET_ID" 2>/dev/null

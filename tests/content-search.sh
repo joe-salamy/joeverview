@@ -26,7 +26,7 @@ case "$cmd" in
     ;;
   capture-pane)
     printf '%s\n' "$*" >> "${CAPTURE_LOG:-/dev/null}"
-    printf 'hello world\n'
+    printf 'hello world\n   \n\nback\\slash\n'
     ;;
   display-message)
     if [[ " $* " == *" -t "* ]]; then
@@ -73,8 +73,10 @@ grep -qF -- '-t %p9' "$T/capture" || fail "capture targets pane 9"
 grep -qF '%p9' "$T/rows" || fail "rows carry pane id"
 grep -qF 'hello world' "$T/rows" || fail "rows carry capture text"
 grep -qF "$(printf '\037')" "$T/rows" || fail "rows use unit separator"
+[ "$(wc -l < "$T/rows")" -eq 4 ] || fail "blank lines filtered (2 panes x 2 rows)"
+grep -qF 'back\slash' "$T/rows" || fail "backslashes kept verbatim"
 grep -qF 'switch-client -t $s9' "$T/calls" || fail "search switch-client log"
-grep -qF 'select-window -t @w9' "$T/calls" || fail "search select-window log"
+grep -qF 'select-window -t $s9:@w9' "$T/calls" || fail "search select-window log"
 sw=$(grep -nF 'switch-client' "$T/calls" | head -1 | cut -d: -f1)
 ww=$(grep -nF 'select-window' "$T/calls" | head -1 | cut -d: -f1)
 (( sw < ww )) || fail "search jump order"
