@@ -15,7 +15,9 @@
 #   PAINT: draw() is the only full repaint (buffered into FRAME, one flush);
 #     paint_row() repaints a single title row for same-page moves. put/nput
 #     append cursor-addressed writes to FRAME (put clears to EOL first);
-#     footext() owns the footer text, paint_footer() renders it.
+#     cell_put clears just one cell's span (ECH) so gutters drawn once by
+#     paint_gutters survive. footext() owns the footer text, footer_line()
+#     truncates it, paint_footer() renders it.
 #   INPUT: main loop at the bottom (draw, then read-key dispatch). Mutations go
 #     through do_* helpers, which reload via refresh_to() (keyword args
 #     sid=/wid=/off=/bar=1, reseat sel/sess/top by stable ID) and redraw.
@@ -588,26 +590,30 @@ title_cell() {
   if [[ -n $sgr ]]; then printf '\x1b[%sm%s\x1b[0m' "$sgr" "${TITLES[$idx]}"
   else printf '%s' "${TITLES[$idx]}"; fi
 }
-# Repaint one visible title row (both cells + gutter + borders) without
-# wiping the sibling: clear once at row start, then write with no-EL moves.
+# Clear one cell's interior span on row y (col 0 = left, 1 = right cell)
+# and write text at the cell's content column (one in from the span).
+# ECH (CSI n X) erases without moving the cursor, so the gutters and
+# borders, drawn once by paint_gutters, are never wiped (EL would be).
+cell_put() {
+  local y=$1 x=1 len=$((vx - 1)) cell
+  if (( $2 )); then x=$((vx + 1)); len=$((W - 2 - vx)); fi
+  ((len < 1)) && len=1
+  printf -v cell '\x1b[%d;%dH\x1b[%dX %s' "$((y + 1))" "$((x + 1))" "$len" "$3"
+  FRAME+=$cell
+}
+# Top row of title band r.
+band_y() { BAND_Y=$(( $1 ? mid_y + 2 : 2 )); }
+# Repaint one visible title row (same-page moves): rewrite both titles in
+# their own spans; the gutters between them are untouched.
 paint_row() {
-  local r=$1 roff base idx c coff
-  if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
-  base=$((top + r * COLS))
-  # Arm-aware frame (junctions close with corners): skip border ticks with no occupied owner; never invent arms.
-  at "$roff" 0
-  (( base < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) 1 '│'
+  local r=$1 c idx
+  band_y "$r"
+  FRAME=''
   for ((c = 0; c < COLS; c++)); do
-    idx=$((base + c))
-    if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
-    if ((idx < send)); then
-      if ((idx == sel)); then printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 1)"
-      else printf '\x1b[%d;%dH%s' $((roff + 1)) $((coff + 1)) "$(title_cell "$idx" 0)"; fi
-    fi
+    idx=$((top + r * COLS + c))
+    ((idx < send)) && cell_put "$BAND_Y" "$c" "$(title_cell "$idx" $((idx == sel)))"
   done
-  (( base < send || base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) $((vx + 1)) '│'
-  (( base + 1 < send )) && printf '\x1b[%d;%dH%s' $((roff + 1)) "$W" '│'
-  return 0
+  printf '%s' "$FRAME"
 }
 # Session medallion for the top border: padded arrows when paging is
 # possible, padded bare name when it is not (single session hides session switching — the bar still focuses (session ops live there)).
@@ -665,124 +671,76 @@ switch_sess() {
   sel=$s0; top=$s0; bar=1
   draw
 }
-# Horizontal border row for one occupancy pair: ends + center junction
-# follow the left/right occupancy ($4/$5); the mid divider is separate.
+# Frame occupancy: the visible page fills cells in order, so cell k is
+# occupied iff k < nvis (draw() local, 1..4; cell 0 always is). Each edge
+# and junction picks the glyph for its present arms, so edges close with
+# corners instead of dangling tees/crosses.
+# Set var $1 to $2 repetitions of '─'.
+hline() { printf -v "$1" '%*s' "$2" ''; printf -v "$1" '%s' "${!1// /─}"; }
+# Top/bottom border row: $6 = occupied cells on the adjacent band (0-2).
 hborder() {
-  local row=$1 le=$2 re=$3 ol=$4 or=$5 jb=$6 jl=$7 jr=$8 seg x
-  if (( ol )); then seg=$le; else seg=' '; fi
-  for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then
-      if (( ol && or )); then seg+=$jb
-      elif (( ol )); then seg+=$jl
-      elif (( or )); then seg+=$jr
-      else seg+=' '; fi
-    elif ((x < vx)); then
-      if (( ol )); then seg+='─'; else seg+=' '; fi
-    else
-      if (( or )); then seg+='─'; else seg+=' '; fi
-    fi
-  done
-  if (( or )); then seg+=$re; else seg+=' '; fi
-  put "$row" 0 "$seg"
+  local row=$1 le=$2 re=$3 jb=$4 jl=$5 occ=$6 left right
+  ((occ)) || { put "$row" 0 ''; return; }
+  hline left $((vx - 1))
+  if ((occ == 2)); then hline right $((W - 2 - vx)); put "$row" 0 "$le$left$jb$right$re"
+  else put "$row" 0 "$le$left$jl"; fi
 }
-# Pre-cell gutter/frame pass; restore_gutters() repaints the same cells after paint_cells (EL-then-restore). Both share occ().
-occ() { (( top + $1 < send )); }
+# Mid divider row between the two bands.
+paint_mid() {
+  local left right='' le='╰' jn='╯' re=''
+  hline left $((vx - 1))
+  ((nvis > 2)) && le='├'
+  if ((nvis > 1)); then
+    hline right $((W - 2 - vx)); re='╯'; jn='┴'
+    ((nvis > 2)) && jn='┼'
+    ((nvis > 3)) && re='┤'
+  fi
+  put "$mid_y" 0 "$le$left$jn$right$re"
+}
+# Side borders + column divider for every non-border row, plus the bottom
+# border. Drawn once per full paint; cell_put never touches these columns.
 paint_gutters() {
-  local y b2o=0 b3o=0
-  occ 2 && b2o=1; occ 3 && b3o=1
-  for ((y = 1; y <= bot_y - 1; y++)); do
+  local y gl gm gr
+  for ((y = 1; y < bot_y; y++)); do
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
-      if occ 0; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-      if occ 1; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
-    else
-      if occ 2; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-      if occ 3; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
-    fi
-  done
-  hborder "$bot_y" '╰' '╯' "$b2o" "$b3o" '┴' '╯' '╰'
-  for ((y = 1; y <= bot_y - 1; y++)); do
-    ((y == mid_y)) && continue
-    if ((y < mid_y)); then
+      gl='│'; gm='│'; gr=' '; ((nvis > 1)) && gr='│'
       # Notch the divider where it passes under the session medallion,
       # so the column border never touches the session name.
-      if { occ 0 || occ 1; } && (( y != 1 || vx < sbx || vx >= sbx + sblen )); then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+      ((y == 1 && vx >= sbx && vx < sbx + sblen)) && gm=' '
     else
-      if occ 2 || occ 3; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
+      gl=' '; gm=' '; gr=' '
+      ((nvis > 2)) && { gl='│'; gm='│'; }
+      ((nvis > 3)) && gr='│'
+    fi
+    nput "$y" 0 "$gl"; nput "$y" "$vx" "$gm"; nput "$y" $((W - 1)) "$gr"
+  done
+  hborder "$bot_y" '╰' '╯' '┴' '╯' $(( nvis > 3 ? 2 : nvis > 2 ? 1 : 0 ))
+}
+paint_cells() {
+  local k c idx l lines
+  for ((k = 0; k < COLS * VROWS; k++)); do
+    c=$((k % COLS)); idx=$((top + k))
+    band_y $((k / COLS))
+    if ((idx < send)); then
+      cell_put "$BAND_Y" "$c" "$(title_cell "$idx" $((idx == sel && bar == 0)))"
+      mapfile -t lines <<<"${SNAP[${IDS[$idx]}]:-}"
+      for ((l = 0; l < snap_h; l++)); do
+        cell_put $((BAND_Y + 1 + l)) "$c" "${lines[$l]:-}"
+      done
+    else
+      for ((l = 0; l < band_h; l++)); do cell_put $((BAND_Y + l)) "$c" ''; done
     fi
   done
 }
-restore_gutters() {
-  local r l y roff
-  # Cell puts use EL (clear-to-EOL), wiping the middle gutter + right border
-  # on touched rows. Restore them with no-EL writes after the cells.
-  for ((r = 0; r < VROWS; r++)); do
-    if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
-    for ((l = 0; l < band_h; l++)); do
-      y=$((roff + l))
-      if ((r == 0)); then
-        if occ 0; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-        if occ 0 || occ 1; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
-        if occ 1; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
-      else
-        if occ 2; then nput "$y" 0 '│'; else nput "$y" 0 ' '; fi
-        if occ 2 || occ 3; then nput "$y" "$vx" '│'; else nput "$y" "$vx" ' '; fi
-        if occ 3; then nput "$y" $((W - 1)) '│'; else nput "$y" $((W - 1)) ' '; fi
-      fi
-    done
-  done
-}
-paint_cells() {
-  local r c idx coff roff l lines blank
-  printf -v blank '%*s' "$cell_w" ''
-  for ((r = 0; r < VROWS; r++)); do
-    if ((r == 0)); then roff=2; else roff=$((mid_y + 2)); fi
-    for ((c = 0; c < COLS; c++)); do
-      idx=$((top + r * COLS + c))
-      if ((c == 0)); then coff=2; else coff=$((vx + 2)); fi
-      if ((idx < send)); then
-        if ((idx == sel && bar == 0)); then put "$roff" "$coff" "$(title_cell "$idx" 1)"
-        else put "$roff" "$coff" "$(title_cell "$idx" 0)"; fi
-        mapfile -t lines <<<"${SNAP[${IDS[$idx]}]:-}"
-        for ((l = 0; l < snap_h; l++)); do
-          put $((roff + 1 + l)) "$coff" "${lines[$l]:-}"
-        done
-      else
-        for ((l = 0; l < band_h; l++)); do
-          put $((roff + l)) "$coff" "$blank"
-        done
-      fi
-    done
-  done
-}
-mid_junction() {
-  local l=$1 r=$2 u=$3 d=$4
-  if (( l && r && u && d )); then printf '┼'
-  elif (( l && r && u )); then printf '┴'
-  elif (( l && r && d )); then printf '┬'
-  elif (( l && u && d )); then printf '┤'
-  elif (( r && u && d )); then printf '├'
-  elif (( l && r )); then printf '─'
-  elif (( u && d )); then printf '│'
-  elif (( l && u )); then printf '╯'
-  elif (( l && d )); then printf '╮'
-  elif (( r && u )); then printf '╰'
-  elif (( r && d )); then printf '╭'
-  elif (( l || r )); then printf '─'
-  elif (( u || d )); then printf '│'
-  else printf ' '; fi
-}
+# The only full repaint: buffered into FRAME, flushed with one printf.
+# Bounds are the visible session's [top, send), never the global list.
 draw() {
-  local b seg x y r c idx coff roff l sbar sinner sblen sbx lines u d
-  local -a occ4
+  local nvis sinner sblen sbx sbar
   fault_visible
+  nvis=$((send - top)); ((nvis > COLS * VROWS)) && nvis=$((COLS * VROWS))
   FRAME=$'\x1b[?25l'
-  # Arm-aware frame: same geometry/sizes; each junction picks the glyph
-  # matching its present arms (occ4[0..3] = visible occupancy of the 4 cells),
-  # so edges close with corners instead of dangling tees/crosses.
-  # Bounds are the visible session's [top, send), never the global list.
-  for ((b = 0; b < 4; b++)); do occ4[$b]=0; occ "$b" && occ4[$b]=1; done
-  hborder 0 '╭' '╮' "${occ4[0]}" "${occ4[1]}" '┬' '╮' '╭'
+  hborder 0 '╭' '╮' '┬' '╮' $(( nvis > 1 ? 2 : 1 ))
   nput 0 2 ' Windows '
   split_medallion
   sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=$SB_MIN_X
@@ -799,27 +757,8 @@ draw() {
   if ((bar)); then printf -v sbar '  \x1b[7m%s\x1b[0m  ' "$sinner"; else sbar="  $sinner  "; fi
   nput 0 "$sbx" "$sbar"
   paint_gutters
-  if (( occ4[0] && occ4[2] )); then seg='├'
-  elif (( occ4[0] )); then seg='╰'
-  elif (( occ4[2] )); then seg='╭'
-  else seg=' '; fi
-  for ((x = 1; x <= W - 2; x++)); do
-    if ((x == vx)); then
-      l=$(( occ4[0] || occ4[2] )); r=$(( occ4[1] || occ4[3] )); u=$(( occ4[0] || occ4[1] )); d=$(( occ4[2] || occ4[3] ))
-      seg+=$(mid_junction "$l" "$r" "$u" "$d")
-    elif ((x < vx)); then
-      if (( occ4[0] || occ4[2] )); then seg+='─'; else seg+=' '; fi
-    else
-      if (( occ4[1] || occ4[3] )); then seg+='─'; else seg+=' '; fi
-    fi
-  done
-  if (( occ4[1] && occ4[3] )); then seg+='┤'
-  elif (( occ4[1] )); then seg+='╯'
-  elif (( occ4[3] )); then seg+='╮'
-  else seg+=' '; fi
-  put "$mid_y" 0 "$seg"
+  paint_mid
   paint_cells
-  restore_gutters
   paint_footer
   printf '%s' "$FRAME"
 }

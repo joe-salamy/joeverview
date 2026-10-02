@@ -51,13 +51,14 @@ titles, medallion — all truncated to the old cell size) and does a full redraw
 ## Flicker-free input
 
 Each full paint is buffered into one string and flushed with a single `printf` (~9.5 KB atomic).
-Same-page moves repaint only the affected title row(s): one `EL` clear per row, then both cells +
-gutter + borders rewritten with no-EL moves (per-cell `EL` wiped the sibling title). No-op keys
-redraw nothing. Cursor hidden (`?25l`) while open, `stty` state restored on exit.
+Gutters and borders are drawn once per paint; each cell row is cleared with `ECH` (`CSI n X`,
+erase n chars in place) over just that cell's span, never `EL` — clear-to-end-of-line wiped the
+sibling cell, the column divider and the right border, which then had to be repainted. Same-page
+moves repaint only the affected title(s) the same way. No-op keys redraw nothing. Cursor hidden (`?25l`) while open, `stty` state restored on exit.
 
-Empty-cell padding is built once per paint with Bash `printf -v` and reused for each row.
-Command substitution inside that row loop would spawn a subprocess for every blank row,
-delaying the first frame while the fullscreen popup is empty.
+Nothing in the per-row paint loops forks: empty cells are just an `ECH`, border runs are built
+with `printf -v`, and the footer is sliced in pure bash (all its glyphs are width 1). A command
+substitution or `python3` spawn per row or per keypress visibly delays frames.
 
 Quoting trap that bit: `'\x1b[K'` in single quotes emits literal text — escapes are built with
 `printf -v '…\x1b…'`. tests/grid-render.sh asserts zero literal `\x1b` sequences over rendered

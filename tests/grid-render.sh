@@ -147,8 +147,10 @@ check_no_literal_esc() { for f in "$@"; do grep -qF '\x1b' "$f" && fail "literal
 run_picker n4 '\x1b[Cq' "$T/out-c"
 SEL1=$(printf '\x1b[7m[1]')
 SEL0=$(printf '\x1b[7m[0]')
-tail -c 1024 "$T/out-c" | grep -qF "$SEL1" || fail "arrow-move tail-select"
-tail -c 1024 "$T/out-c" | grep -qF "$SEL0" && fail "arrow-move stale-select"
+# Everything painted after the last [0] highlight: [1] highlighted, [0] plain.
+OUT_C=$(cat "$T/out-c"); AFTER_C=${OUT_C##*"$SEL0"}
+[[ $AFTER_C == *"$SEL1"* ]] || fail "arrow-move tail-select"
+[[ $AFTER_C == *' [0] win0'* ]] || fail "arrow-move stale-select"
 
 # (d) six fed 2 selects @w2
 : > "$T/calls-d"
