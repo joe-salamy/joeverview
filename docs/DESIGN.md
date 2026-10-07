@@ -83,10 +83,20 @@ output for this reason.
 
 ## Alert colors
 
-Titles carry a per-load `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` snapshot (refreshed by each tick): bell =
+Titles carry a per-load `#{?window_bell_flag,B,}#{?@jv_bell,B,}#{?window_activity_flag,A,}` snapshot (refreshed by each tick): bell =
 bold red, activity = bold yellow, reverse folded in when selected. `monitor-activity` is off by
 default, so yellow never fires until `setw -g monitor-activity on`; bell red works with stock
 `monitor-bell on`.
+
+Sticky bell (`@jv_bell`): tmux sets `window_bell_flag` only on windows that are *not* current in
+an attached session (alerts.c), so a BEL in the window you are on — e.g. an agent finishing while
+Ghostty is unfocused and pops a notification — never turns red. The `alert-bell` hook does fire
+for the current window, so `tmux/joeverview.conf` hooks `alert-bell[86]` (indexed: user hooks
+survive, re-source idempotent) to `set-option -wq @jv_bell 1`. Only `jump_win` (a prefix-o jump to
+that window) unsets it; visiting by other routes clears tmux's own flag but not this one.
+Notifications that never reach tmux as a bare BEL (Claude Code's `ghostty` channel wraps OSC 777
+in DCS passthrough, BEL inside) can't be seen at all — use `preferredNotifChannel:
+iterm2_with_bell` there.
 
 ## Session pager + pane badge
 

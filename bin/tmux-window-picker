@@ -243,7 +243,7 @@ load_data() {
   while IFS= read -r row; do
     row=${row//$'\t'/"$US"}
     bucket[${row%%"$US"*}]+=${row#*"$US"}$'\n'
-  done < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?window_activity_flag,A,}")
+  done < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?@jv_bell,B,}#{?window_activity_flag,A,}")
   for ((k = 0; k < nsess; k++)); do
     sid=${SESS_IDS[$k]}
     SESS_START[$k]=$idx
@@ -840,9 +840,13 @@ move_down() {
 }
 
 # Jump to a window, switching session first when it lives elsewhere.
+# Jumping is the only thing that clears the sticky @jv_bell red (set by the
+# alert-bell hook in tmux/joeverview.conf, which also fires for the current
+# window where tmux's own bell flag never does).
 jump_win() {
   local j=$1 wsess
   wsess=${WIN_SESS[$j]}
+  tmux set-option -wqu -t "${IDS[$j]}" @jv_bell 2>/dev/null
   [[ $wsess != "$cur_sid" ]] && tmux switch-client -t "$wsess" 2>/dev/null
   # Session-qualified: a window linked into several sessions resolves in
   # this occurrence's session, not whichever one tmux deems best.

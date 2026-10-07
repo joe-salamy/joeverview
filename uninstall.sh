@@ -39,6 +39,7 @@ fi
 if tmux has-session >/dev/null 2>&1; then
   tmux unbind-key -T prefix o 2>/dev/null || true
   tmux unbind-key -T prefix / 2>/dev/null || true
+  tmux set-hook -gu 'alert-bell[86]' 2>/dev/null || true
   stock=$(tmux -L "joeverview-stock-$$" -f /dev/null new-session -d \; \
     list-keys -T prefix o \; list-keys -T prefix / \; kill-server 2>/dev/null) || stock=""
   if [ -n "$stock" ]; then printf '%s\n' "$stock" | tmux source-file - || true; fi

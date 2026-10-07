@@ -18,7 +18,7 @@ Read when the popup opens — reopen it after changing the value (`prefix r` rel
 
 ### Window focus (the grid)
 
-Each cell: `[index] name │ task │ path` title (+ `⧉ N` when the window holds N tmux panes) + bottom-left of the window's active pane. Cursor starts on the current window. Selected cell is reverse-highlighted; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock).
+Each cell: `[index] name │ task │ path` title (+ `⧉ N` when the window holds N tmux panes) + bottom-left of the window's active pane. Cursor starts on the current window. Selected cell is reverse-highlighted; red title = bell, yellow = activity (needs `setw -g monitor-activity on`; bell red works stock). Bell red is sticky — it also marks the window you were on when it rang, and stays until you jump to that window from this grid.
 
 | key | action |
 |---|---|
