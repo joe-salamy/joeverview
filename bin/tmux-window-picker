@@ -745,9 +745,6 @@ paint_gutters() {
     ((y == mid_y)) && continue
     if ((y < mid_y)); then
       gl='│'; gm='│'; gr=' '; ((nvis > 1)) && gr='│'
-      # Notch the divider where it passes under the session medallion,
-      # so the column border never touches the session name.
-      ((y == 1 && vx >= sbx && vx < sbx + sblen)) && gm=' '
     else
       gl=' '; gm=' '; gr=' '
       ((nvis > 2)) && { gl='│'; gm='│'; }
