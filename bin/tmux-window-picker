@@ -20,10 +20,13 @@
 #     truncates it, paint_footer() renders it.
 #   INPUT: main loop at the bottom (draw, then read-key dispatch). Mutations go
 #     through do_* helpers, which reload via refresh_to() (keyword args
-#     sid=/wid=/off=/bar=1, reseat sel/sess/top by stable ID) and redraw.
-#     Arrow keys and WASD share nav_up/nav_down/nav_left/nav_right. Footer is
-#     the contract: grid focus runs window ops only, bar focus session ops
-#     only — see docs/USAGE.md.
+#     sid=/wid=/off=/bar=1/if_changed=1, reseat sel/sess/top by stable ID)
+#     and redraw. Arrow keys and WASD share nav_up/nav_down/nav_left/nav_right.
+#     Footer is the contract: grid focus runs window ops only, bar focus
+#     session ops only — see docs/USAGE.md.
+#   AUTO-REFRESH: the loop's 0.25s read timeout doubles as the tick; every
+#     @joeverview-refresh seconds (default 1, 0 = off) it runs refresh_view(),
+#     the same reload as `r`, and skips the flush when the frame is unchanged.
 set -u
 US=$'\x1f'  # internal field separator (non-whitespace IFS keeps empty fields)
 COLS=2; VROWS=2  # Fixed 2x2: mid_y/bot_y and the single mid divider assume VROWS=2.
@@ -159,7 +162,25 @@ vwidth() {
 # shares the PY_COMMON width rule (wide→2, combining→0).
 VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.stdin.read()); print(sum(2 if unicodedata.east_asian_width(c) in ("W","F") else (0 if unicodedata.combining(c) else 1) for c in t))'
 
-read -r cur_sid cur < <(tmux display-message -p '#{session_id} #{window_id}')
+read -r cur_sid cur refresh_opt < <(tmux display-message -p '#{session_id} #{window_id} #{@joeverview-refresh}')
+# Auto-refresh period from @joeverview-refresh: seconds, decimals allowed,
+# 0 = off; unset or malformed keeps the 1s default. Held as integer
+# microseconds for EPOCHREALTIME math. Read once per popup open.
+REFRESH_US=1000000
+if [[ ${refresh_opt:-} =~ ^([0-9]+)(\.([0-9]+))?$ ]]; then
+  refresh_frac=${BASH_REMATCH[3]}000000
+  REFRESH_US=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${refresh_frac:0:6}))
+fi
+# Clock into NOW (µs), no subshell. EPOCHREALTIME's decimal point follows
+# the locale, so strip every non-digit; bash < 5 lacks it and falls back to
+# whole seconds.
+stamp_now() {
+  if [[ -n ${EPOCHREALTIME:-} ]]; then NOW=${EPOCHREALTIME//[!0-9]/}
+  else NOW=$((SECONDS * 1000000)); fi
+}
+# Last metadata reload (µs). Every refresh_to() stamps it, so any action that
+# already reloaded postpones the next tick instead of reloading twice.
+LAST_LOAD=0
 MIN_H=11        # title + 2 bands + mid + footer + frame
 FRAME_W=7       # left/right borders + gutters + title padding
 TITLE_PAD=2     # title rows indent 2 inside the cell
@@ -267,21 +288,25 @@ place_top() {
   (( max_top < s0 )) && max_top=$s0
   if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
 }
-# Re-read metadata and reseat sess/sel/top by stable ID (wid="" falls back
-# to off, then clamps into the session). bar=1 preserves session-bar focus
-# for r. Full draw; exits quietly when nothing remains (e.g. last window
-# killed). Keyword args, all optional: sid= wid= off= bar=1.
+# Re-read metadata and reseat sess/sel/top by stable ID (wid missing or gone
+# falls back to off, then clamps into the session). bar=1 preserves
+# session-bar focus. Full draw; if_changed=1 skips the flush when the frame
+# matches the screen (auto-refresh). Exits quietly when nothing remains (e.g.
+# last window killed). Keyword args, all optional: sid= wid= off= bar=1
+# if_changed=1.
 refresh_to() {
-  local want_sid="" want_wid="" want_off="" keep_bar=0 a k found=0
+  local want_sid="" want_wid="" want_off="" keep_bar=0 draw_mode="" a k found=0 got_wid=0
   for a in "$@"; do
     case $a in
       sid=*) want_sid=${a#sid=} ;;
       wid=*) want_wid=${a#wid=} ;;
       off=*) want_off=${a#off=} ;;
       bar=1) keep_bar=1 ;;
+      if_changed=1) draw_mode=if_changed ;;
     esac
   done
   load_data || exit 0
+  stamp_now; LAST_LOAD=$NOW
   sess=0
   if [[ -n $want_sid ]]; then
     for ((k = 0; k < nsess; k++)); do
@@ -294,16 +319,27 @@ refresh_to() {
   sel=$s0
   if [[ -n $want_wid ]]; then
     for ((k = s0; k < send; k++)); do
-      if [[ ${IDS[$k]} == "$want_wid" ]]; then sel=$k; break; fi
+      if [[ ${IDS[$k]} == "$want_wid" ]]; then sel=$k; got_wid=1; break; fi
     done
-  elif [[ -n $want_off ]] && (( found )); then
+  fi
+  if (( ! got_wid )) && [[ -n $want_off ]] && (( found )); then
     sel=$((s0 + want_off))
   fi
   (( sel < s0 )) && sel=$s0
   (( sel >= send )) && sel=$((send - 1))
   bar=$keep_bar
   place_top
-  draw
+  draw ${draw_mode:+"$draw_mode"}
+}
+# Full reload, shared by `r` and the auto-refresh tick: drop every cached
+# capture and medallion (other sessions refault on switch), reseat on the
+# selected window by stable ID, else its offset when it died elsewhere, and
+# keep the current focus. Extra args pass through (if_changed=1).
+refresh_view() {
+  local -a args=(sid="${SESS_IDS[$sess]}" wid="${IDS[$sel]}" off=$((sel - s0)))
+  ((bar)) && args+=(bar=1)
+  SNAP=(); SESS_MED=()
+  refresh_to "${args[@]}" "$@"
 }
 # New window in the viewed session, starting in the selected cell's
 # directory; grid cursor lands on it. Created detached (-d) so the
@@ -487,6 +523,7 @@ do_rename_session() {
 }
 
 load_data || exit 0
+stamp_now; LAST_LOAD=$NOW
 sess=0
 for ((k = 0; k < nsess; k++)); do
   if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
@@ -573,7 +610,9 @@ fault_visible() {
 bar=0
 confirm_armed=0
 
-at() { printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
+# Direct writes (at, paint_row) bypass FRAME, so they void SHOWN: the next
+# if_changed draw must flush even when its frame matches the last one.
+at() { SHOWN=''; printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
 
 put() { local cell; printf -v cell '\x1b[%d;%dH\x1b[K%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
 nput() { local cell; printf -v cell '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
@@ -613,6 +652,7 @@ paint_row() {
     idx=$((top + r * COLS + c))
     ((idx < send)) && cell_put "$BAND_Y" "$c" "$(title_cell "$idx" $((idx == sel)))"
   done
+  SHOWN=''
   printf '%s' "$FRAME"
 }
 # Session medallion for the top border: padded arrows when paging is
@@ -735,6 +775,8 @@ paint_cells() {
 }
 # The only full repaint: buffered into FRAME, flushed with one printf.
 # Bounds are the visible session's [top, send), never the global list.
+# `draw if_changed` (auto-refresh) skips the flush when FRAME is
+# byte-identical to SHOWN, the last flushed frame still on screen.
 draw() {
   local nvis sinner sblen sbx sbar
   fault_visible
@@ -760,7 +802,9 @@ draw() {
   paint_mid
   paint_cells
   paint_footer
+  if [[ ${1:-} == if_changed && $FRAME == "${SHOWN:-}" ]]; then return 0; fi
   printf '%s' "$FRAME"
+  SHOWN=$FRAME
 }
 
 # Shared arrow/WASD navigation. Return 0 when fully handled (full draw done or no-op: caller skips repaint); return 1 when sel moved and the caller must repaint.
@@ -813,12 +857,22 @@ while :; do
   IFS= read -rsn1 -t 0.25 k; rc=$?
   if ((rc)); then
     ((rc > 128)) || break  # >128 = poll timeout; anything else is EOF
-    ((RESIZED)) || continue
-    # Resize: captures, titles and medallions are truncated to the old cell
-    # size, so drop them like `r` does and repaint at the new geometry.
-    RESIZED=0; compute_geometry
-    SNAP=(); SESS_MED=(); TITLES_DIRTY=1
-    printf '\x1b[2J'; draw; continue
+    if ((RESIZED)); then
+      # Resize: captures, titles and medallions are truncated to the old cell
+      # size, so drop them like `r` does and repaint at the new geometry.
+      RESIZED=0; compute_geometry
+      SNAP=(); SESS_MED=(); TITLES_DIRTY=1
+      printf '\x1b[2J'; draw; continue
+    fi
+    # Auto-refresh tick, timed by the clock (keys restart the read timeout,
+    # so counting timeouts would drift). A backward wall-clock step also
+    # fires rather than stalling the tick. Never while the kill confirm owns
+    # the footer: a redraw would wipe the y/N prompt while y still kills.
+    if (( REFRESH_US > 0 && ! confirm_armed )); then
+      stamp_now
+      (( NOW - LAST_LOAD >= REFRESH_US || NOW < LAST_LOAD )) && refresh_view if_changed=1
+    fi
+    continue
   fi
   prev=$sel
   if ((confirm_armed)); then
@@ -890,9 +944,7 @@ while :; do
     # Explicit refresh: drop all cached captures/medallions so pane content
     # and renamed sessions fault in fresh (c/X reuse the cache on purpose).
     # Lowercase only: R is rename (visible in both footers).
-    SNAP=(); SESS_MED=()
-    if ((bar)); then refresh_to sid="${SESS_IDS[$sess]}" bar=1
-    else refresh_to sid="${SESS_IDS[$sess]}" wid="${IDS[$sel]}"; fi
+    refresh_view
     continue
   elif [[ $k == R ]]; then
     # Rename: window on grid focus, session on bar focus. Empty keeps old.

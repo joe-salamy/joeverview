@@ -12,13 +12,30 @@ Why: bare `-t 0`/`-t 1` resolve against the *active* window/session, not window 
 showed the active window's content for unvisited windows. Indexes also shift under
 `renumber-windows`; IDs survive.
 
-## Snapshot grid, not a live mirror
+## Snapshot grid, refreshed on a tick
 
-`prefix o` reads window metadata at launch (`list-sessions` + one batched `list-windows -a`), truncates
+`prefix o` reads window metadata (`list-sessions` + one batched `list-windows -a`), truncates
 all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t
 @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in
-synchronously. `r` (or reopen) refreshes after out-of-band changes — there is no way to mirror live
-panes without moving them.
+synchronously. There is no way to mirror live panes without moving them, so the grid re-snapshots
+instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (default `1`,
+decimals allowed, `0` = off; read once per popup open).
+
+Auto-refresh is the same reload as `r` (`refresh_view`), driven from the main loop's existing 0.25 s
+read timeout — no timer process, so the tick has 0.25 s granularity. Rules it follows:
+
+- Timed by the clock (`EPOCHREALTIME`), not by counting timeouts: every key restarts the read
+  timeout. Any action that already reloaded (`c`, `X`, `R`, `r`, …) postpones the next tick; a
+  backward clock step fires instead of stalling.
+- Reseats by stable ID: the selected window stays selected; if it died elsewhere the cursor keeps
+  its offset; bar focus and the hidden grid selection behind it are kept.
+- Skips the flush when the new frame is byte-identical to the one on screen (`SHOWN`). Direct
+  writes that bypass the frame buffer (`at`, `paint_row`) void `SHOWN` so the next tick flushes.
+- Never ticks while the session-kill `y/N` confirm is armed (a redraw would hide the prompt while
+  `y` still kills). The rename prompt runs its own blocking read, so it cannot tick at all.
+
+Cost per tick: ~5 forks plus one `python3` spawn — measured ~43 ms CPU per 1 s tick (~4 % of one
+core) with 4 windows on a 172×42 canvas.
 
 Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding
 is trimmed inside the trunc helper (no `sed` stage) — grid only; the fzf search still strips with
@@ -66,7 +83,7 @@ output for this reason.
 
 ## Alert colors
 
-Titles carry a launch-time `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` snapshot: bell =
+Titles carry a per-load `#{?window_bell_flag,B,}#{?window_activity_flag,A,}` snapshot (refreshed by each tick): bell =
 bold red, activity = bold yellow, reverse folded in when selected. `monitor-activity` is off by
 default, so yellow never fires until `setw -g monitor-activity on`; bell red works with stock
 `monitor-bell on`.

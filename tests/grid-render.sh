@@ -16,7 +16,8 @@ fail() { echo "FAIL $1" >&2; exit 1; }
 
 # Write stub tmux into $1/bin/tmux (executable). Reads $FIXDIR + $CALL_LOG.
 # Hooks: CAP_EMPTY=1 prints empty captures (test s); ON_NEW_WINDOW/ON_NEW_SESSION
-# point at files appended on new-window/new-session (tests p/s1/s2).
+# point at files appended on new-window/new-session (tests p/s1/s2);
+# STUB_REFRESH is the @joeverview-refresh value (test y).
 # kill-session/rename-session mutate $FIXDIR generically; run_picker copies
 # fixtures to temp so the repo never dirties.
 mk_stub() {
@@ -31,7 +32,7 @@ case "$cmd" in
   display-message)
     case "$*" in
       *client_height*) printf '%s %s\n' "${STUB_H:-30}" "${STUB_W:-60}" ;;
-      *session_id*) printf '%s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" ;;
+      *session_id*) printf '%s %s %s\n' "${CUR_SID:-\$s0}" "${CUR_WID:-@w0}" "${STUB_REFRESH:-}" ;;
       *pane_current_path*) printf '/tmp\n' ;;
     esac
     exit 0
@@ -97,8 +98,10 @@ STUB
 
 # run_in <fixdir> <label> <printf-%b-input> <outfile> <call_log>: the one
 # stub + env + run prelude. Hook env (CUR_SID/CUR_WID/STUB_H/STUB_W/
-# CAP_EMPTY/ON_NEW_*) passes through from callers' inline assignments and
-# is otherwise pinned empty, so the outer shell's environment never leaks.
+# CAP_EMPTY/ON_NEW_*/STUB_REFRESH) passes through from callers' inline
+# assignments and is otherwise pinned empty, so the outer shell's environment
+# never leaks. FEED (bash snippet, FIXDIR in scope) replaces the printf input
+# for timed cases: it can sleep past auto-refresh ticks and mutate fixtures.
 run_in() {
   local fdir=$1 label=$2 input=$3 out=$4 log=$5 r st
   r=$(mktemp -d "$T/run.XXXXXX")
@@ -106,8 +109,9 @@ run_in() {
   : > "$log"; : > "$r/err"
   STUB_H="${STUB_H:-}" STUB_W="${STUB_W:-}" CUR_SID="${CUR_SID:-}" CUR_WID="${CUR_WID:-}" \
   CAP_EMPTY="${CAP_EMPTY:-}" ON_NEW_WINDOW="${ON_NEW_WINDOW:-}" ON_NEW_SESSION="${ON_NEW_SESSION:-}" \
+  STUB_REFRESH="${STUB_REFRESH:-}" FEED="${FEED:-}" \
   FIXDIR="$fdir" CALL_LOG="$log" PATH="$r/bin:$PATH" \
-    bash -c 'printf "%b" "$0" | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
+    bash -c 'if [[ -n $FEED ]]; then bash -c "$FEED"; else printf "%b" "$0"; fi | bash "$1/bin/tmux-window-picker" > "$2" 2>"$3"' \
     "$input" "$REPO" "$out" "$r/err"
   st=$?; (( st == 0 )) || fail "picker exit $st ($label)"
   [ -s "$r/err" ] && { cat "$r/err" >&2; fail "picker stderr ($label)"; }
@@ -345,6 +349,45 @@ grep -qF 'kill-window' "$T/calls-x3" && fail "sole-window killed"
 grep -qF 'X kill' "$T/out-x3" && fail "sole-window footer lists X"
 STUB_W=200 run_picker n2 'q' "$T/out-x4"
 grep -qF 'X kill' "$T/out-x4" || fail "footer lists X"
+
+# (y) auto-refresh (@joeverview-refresh): ticks fire on the read timeout,
+# so these feed input with sleeps (FEED) and mutate fixtures mid-run.
+# count_hide <file>: full-frame flushes (+1 for the startup clear) — every
+# draw flush opens with the cursor-hide CSI.
+count_hide() { local s t; s=$(<"$1"); t=${s//$'\e[?25l'/}; echo $(( (${#s} - ${#t}) / 6 )); }
+mk_y() {
+  mkdir -p "$T/dyn-$1"
+  printf '$s0\tmain\n' > "$T/dyn-$1/sessions"
+  printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n@w1\t1\twin1\tt1\t/tmp/w1\t1\t\n' > "$T/dyn-$1/windows_s0"
+}
+ADD_W2='printf "@w2\t2\twin2\tt2\t/tmp/w2\t1\t\n" >> "$FIXDIR/windows_s0"'
+# (y1) an external new window appears without a key; selection stays on @w1
+mk_y y1
+FEED="printf '\e[C'; sleep 0.3; $ADD_W2; sleep 1; printf q" STUB_REFRESH=0.25 run_dynamic y1 '' "$T/out-y1" "$T/calls-y1"
+grep -qF '[2] win2' "$T/out-y1" || fail "auto-refresh missed new window"
+tail -c 4096 "$T/out-y1" | grep -qF "$SEL1" || fail "auto-refresh lost selection"
+# (y2) the selected window dies elsewhere: cursor keeps its offset (lands on @w2)
+mk_y y2; printf '@w2\t2\twin2\tt2\t/tmp/w2\t1\t\n' >> "$T/dyn-y2/windows_s0"
+DEL_W1='grep -v "^@w1" "$FIXDIR/windows_s0" > "$FIXDIR/w.tmp"; mv "$FIXDIR/w.tmp" "$FIXDIR/windows_s0"'
+FEED="printf '\e[C'; sleep 0.3; $DEL_W1; sleep 1; printf q" STUB_REFRESH=0.25 run_dynamic y2 '' "$T/out-y2" "$T/calls-y2"
+tail -c 4096 "$T/out-y2" | grep -qF "$(printf '\x1b[7m[2]')" || fail "auto-refresh dead-selection offset"
+# (y3) 0 disables the tick
+mk_y y3
+FEED="sleep 0.3; $ADD_W2; sleep 1; printf q" STUB_REFRESH=0 run_dynamic y3 '' "$T/out-y3" "$T/calls-y3"
+grep -qF '[2] win2' "$T/out-y3" && fail "refresh=0 still refreshed"
+# (y4) unchanged content: ticks run but never re-flush (byte-identical to the q-only golden)
+FEED="sleep 1.2; printf q" STUB_REFRESH=0.25 run_picker n2 '' "$T/out-y4"
+cmp -s "$T/out-y4" "$FIXBASE/golden-n2.out" || fail "auto-refresh re-flushed unchanged frame"
+# (y5) no tick while the kill confirm is armed: the prompt stays until the
+# answer, then exactly one draw (the abort) before quitting
+: > "$T/calls-y5"
+FEED="printf '\e[AX'; sleep 1.2; printf nq" STUB_REFRESH=0.25 run_picker multi '' "$T/out-y5" "$T/calls-y5"
+grep -qF 'kill-session' "$T/calls-y5" && fail "confirm-tick killed"
+OUT_Y5=$(cat "$T/out-y5"); printf '%s' "${OUT_Y5##*y/N}" > "$T/out-y5-tail"
+[ "$(count_hide "$T/out-y5-tail")" -eq 1 ] || fail "tick redrew over kill confirm"
+# (y6) a tick on bar focus keeps the grid selection behind the bar (n4: Right, Up, tick, Down)
+FEED="printf '\e[C\e[A'; sleep 1; printf '\e[Bq'" STUB_REFRESH=0.25 run_picker n4 '' "$T/out-y6"
+tail -c 4096 "$T/out-y6" | grep -qF "$SEL1" || fail "bar tick reset selection"
 
 # bounds_check <file> <H> <W>: every CUP address is inside the canvas and the
 # final footer payload (bytes after the last footer-row EL) is one line <= W.
