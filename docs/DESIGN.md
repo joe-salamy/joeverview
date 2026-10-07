@@ -18,8 +18,8 @@ showed the active window's content for unvisited windows. Indexes also shift und
 all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t
 @id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in
 synchronously. There is no way to mirror live panes without moving them, so the grid re-snapshots
-instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (default `1`,
-decimals allowed, `0` = off; read once per popup open).
+instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (shipped `0.5`
+in `tmux/joeverview.conf`, `1` when unset; decimals allowed, `0` = off; read once per popup open).
 
 Auto-refresh is the same reload as `r` (`refresh_view`), driven from the main loop's existing 0.25 s
 read timeout — no timer process, so the tick has 0.25 s granularity. Rules it follows:

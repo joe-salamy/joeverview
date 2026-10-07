@@ -36,7 +36,7 @@ No symlinks needed on this path — `joeverview.tmux` binds the keys straight at
 
 Full details in [`docs/USAGE.md`](docs/USAGE.md); design rationale in [`docs/DESIGN.md`](docs/DESIGN.md).
 
-The grid auto-refreshes every second; change it with `set -g @joeverview-refresh <seconds>` (`0` = off) — see [`docs/USAGE.md`](docs/USAGE.md).
+The grid auto-refreshes twice per second; change it with `set -g @joeverview-refresh <seconds>` (`0` = off) — see [`docs/USAGE.md`](docs/USAGE.md).
 
 ## Requirements
 

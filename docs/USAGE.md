@@ -8,10 +8,10 @@ All popups are fullscreen (`-w 100% -h 100%`), like `choose-tree`.
 
 The popup takes every key, so tmux prefix bindings (e.g. `prefix C-s` for resurrect save) don't fire while it's open: `C-b` and the key after it are ignored, and `C-s`/`C-q`/`C-v` are plain ignored keys (no flow-control freeze). Close the overview first to use them.
 
-The grid **auto-refreshes** every second, like pressing `r`: new or closed windows, pane output, titles and alert colors update without a key, and the selection stays on the same window (if that window closes elsewhere, the cursor keeps its slot). Nothing repaints when nothing changed, and the refresh pauses while the session-kill `y/N` prompt or a rename prompt is open. Set the period in `tmux/joeverview.conf` (or anywhere in `~/.tmux.conf` after it, or before `run tpm` on the TPM path):
+The grid **auto-refreshes** every half second, like pressing `r`: new or closed windows, pane output, titles and alert colors update without a key, and the selection stays on the same window (if that window closes elsewhere, the cursor keeps its slot). Nothing repaints when nothing changed, and the refresh pauses while the session-kill `y/N` prompt or a rename prompt is open. Set the period in `tmux/joeverview.conf` (or anywhere in `~/.tmux.conf` after it, or before `run tpm` on the TPM path):
 
 ```tmux
-set -g @joeverview-refresh 1    # seconds; decimals ok (0.5); 0 = off
+set -g @joeverview-refresh 0.5    # seconds; decimals ok; 0 = off
 ```
 
 Read when the popup opens — reopen it after changing the value (`prefix r` reloads a conf edit).
