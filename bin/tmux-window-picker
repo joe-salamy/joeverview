@@ -523,7 +523,9 @@ do_rename_session() {
 }
 
 load_data || exit 0
-stamp_now; LAST_LOAD=$NOW
+# The bell that rang on the window underneath needs no reminder: we were
+# looking at it. Clear its sticky before seating so the grid opens clean.
+tmux set-option -wqu -t "$cur" @jv_bell 2>/dev/null || true
 sess=0
 for ((k = 0; k < nsess; k++)); do
   if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
@@ -837,9 +839,11 @@ move_down() {
 }
 
 # Jump to a window, switching session first when it lives elsewhere.
-# Jumping is the only thing that clears the sticky @jv_bell red (set by the
-# alert-bell hook in tmux/joeverview.conf, which also fires for the current
-# window where tmux's own bell flag never does).
+# Jumping unsets the sticky @jv_bell red on its target (belt and braces:
+# session-window-changed already drops it on any visit, and popup open
+# drops it on the window underneath). Set by the alert-bell hook in
+# tmux/joeverview.conf, which also fires for the current window where
+# tmux's own bell flag never does.
 jump_win() {
   local j=$1 wsess
   wsess=${WIN_SESS[$j]}

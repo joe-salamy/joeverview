@@ -91,9 +91,13 @@ default, so yellow never fires until `setw -g monitor-activity on`; bell red wor
 Sticky bell (`@jv_bell`): tmux sets `window_bell_flag` only on windows that are *not* current in
 an attached session (alerts.c), so a BEL in the window you are on — e.g. an agent finishing while
 Ghostty is unfocused and pops a notification — never turns red. The `alert-bell` hook does fire
-for the current window, so `tmux/joeverview.conf` hooks `alert-bell[86]` (indexed: user hooks
-survive, re-source idempotent) to `set-option -wq @jv_bell 1`. Only `jump_win` (a prefix-o jump to
-that window) unsets it; visiting by other routes clears tmux's own flag but not this one.
+for the current window (default `bell-action any`), so `tmux/joeverview.conf` hooks `alert-bell[86]`
+(indexed: user hooks survive, re-source idempotent) to `set-option -wq @jv_bell 1`. The sticky is
+cleared on sight, three ways: popup open drops it on the window underneath (picker startup), any
+visit drops it on the newly current window (`session-window-changed[87]`, no `-t`: the hook's
+target context is the visited window), and a prefix-o jump unsets it on its target as belt and
+braces. So the window you were just on never opens red, and a bell you visited by another route
+(prefix-n, click, …) does not stay red.
 Notifications that never reach tmux as a bare BEL (Claude Code's `ghostty` channel wraps OSC 777
 in DCS passthrough, BEL inside) can't be seen at all — use `preferredNotifChannel:
 iterm2_with_bell` there.

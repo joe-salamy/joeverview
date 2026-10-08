@@ -87,7 +87,7 @@ case "$cmd" in
       awk -v sid="$sid" -v new="$new" 'BEGIN{FS=OFS="\t"} $1==sid{$2=new} {print}' "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
     fi
     ;;
-  select-window|switch-client|kill-window|swap-window|select-pane|rename-window)
+  select-window|switch-client|kill-window|swap-window|select-pane|rename-window|set-option)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     ;;
   *) exit 0 ;;
@@ -444,7 +444,17 @@ bounds_check "$T/out-v" 30 200
 grep -qF 'main' "$T/out-v" || fail "wide medallion missing"
 STUB_H=30 STUB_W=200 run_picker n1 '\x1b[A\x1b[Bq' "$T/out-v2"
 [ "$(tr -d -c '\n\r' < "$T/out-v2" | wc -c)" -eq 0 ] || fail "wide moves scrolled"
-bounds_check "$T/out-v2" 30 200
+: > "$T/calls-z"
+# (z) opening the grid never leaves the invoker window red: startup unsets
+# @jv_bell on the window underneath, and a grid jump unsets it on its target
+run_picker n2 'q' "$T/out-z" "$T/calls-z"
+grep -qF 'set-option -wqu -t @w0 @jv_bell' "$T/calls-z" || fail "startup did not clear invoker sticky"
+: > "$T/calls-z2"
+run_picker n2 '1' "$T/out-z2" "$T/calls-z2"
+grep -qF 'set-option -wqu -t @w0 @jv_bell' "$T/calls-z2" || fail "startup clear missing before jump"
+grep -qF 'set-option -wqu -t @w1 @jv_bell' "$T/calls-z2" || fail "jump did not clear target sticky"
+grep -qF 'select-window -t $s0:@w1' "$T/calls-z2" || fail "jump select missing"
+
 
 check_no_literal_esc "$T"/out-* "$OUT_T" "$OUT_U"
 # Negative self-test: an over-wide footer must fail bounds_check

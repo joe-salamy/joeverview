@@ -9,3 +9,4 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmux bind-key o display-popup -B -E -w 100% -h 100% "$CURRENT_DIR/bin/tmux-window-picker"
 tmux bind-key / display-popup -E -w 100% -h 100% -T " Search " "$CURRENT_DIR/bin/tmux-content-search"
 tmux set-hook -g 'alert-bell[86]' 'set-option -wq @jv_bell 1'
+tmux set-hook -g 'session-window-changed[87]' 'set-option -wqu @jv_bell'
