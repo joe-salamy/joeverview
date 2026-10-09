@@ -123,8 +123,9 @@ characters, so the separator arrives as the literal text `\037`.)
 
 The switcher renders as a padded medallion (`  ←  name  →  `, `  name  ` when single)
 so the arrows clear the border dashes. With a single session Left/Right and kill are hidden —
-and ignored — the bar still focuses (session ops live there and nowhere else). The column
-divider runs full height into the top border, passing under the medallion's padding.
+and ignored — the bar still focuses (session ops live there and nowhere else). The mid divider
+is notched for the one row passing under the medallion, so the column border never touches the
+session name.
 
 ## Strict focus modes + rename
 
