@@ -56,11 +56,12 @@ Removes the `~/.local/bin` symlinks only if they still point at this checkout, d
 
 ```text
 bin/                  the two pickers (source of truth)
-tmux/joeverview.conf  the two bind-key lines, sourced from ~/.tmux.conf
+tmux/joeverview.conf  binds, sticky-bell hooks, refresh period; sourced from ~/.tmux.conf
 joeverview.tmux       TPM entry point (binds keys at the checkout, no symlinks)
 docs/                 USAGE.md, DESIGN.md
-tests/smoke.sh        syntax + symlink + bindings + grid-render (single entry point)
+tests/smoke.sh        syntax + opt-in symlink + bindings + both harnesses (single entry point)
 tests/grid-render.sh  stub-tmux goldens + interactions (also run via smoke)
+tests/content-search.sh  stub-tmux/fzf search rows + jump (also run via smoke)
 install.sh            deps + symlink + wire + reload, idempotent
 uninstall.sh          unlink + unwire + reload, idempotent
 ```

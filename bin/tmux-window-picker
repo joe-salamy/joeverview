@@ -16,8 +16,8 @@
 #     paint_row() repaints a single title row for same-page moves. put/nput
 #     append cursor-addressed writes to FRAME (put clears to EOL first);
 #     cell_put clears just one cell's span (ECH) so gutters drawn once by
-#     paint_gutters survive. footext() owns the footer text, footer_line()
-#     truncates it, paint_footer() renders it.
+#     paint_gutters survive. footext() owns the footer text, paint_footer()
+#     truncates and renders it.
 #   INPUT: main loop at the bottom (draw, then read-key dispatch). Mutations go
 #     through do_* helpers, which reload via refresh_to() (keyword args
 #     sid=/wid=/off=/bar=1/if_changed=1, reseat sel/sess/top by stable ID)
@@ -25,7 +25,7 @@
 #     Footer is the contract: grid focus runs window ops only, bar focus
 #     session ops only — see docs/USAGE.md.
 #   AUTO-REFRESH: the loop's 0.25s read timeout doubles as the tick; every
-#     @joeverview-refresh seconds (default 1, 0 = off) it runs refresh_view(),
+#     @joeverview-refresh seconds (default 0.5, 0 = off) it runs refresh_view(),
 #     the same reload as `r`, and skips the flush when the frame is unchanged.
 set -u
 US=$'\x1f'  # internal field separator (non-whitespace IFS keeps empty fields)
@@ -53,16 +53,18 @@ stty -echo -icanon -ixon -iexten min 1 time 0 2>/dev/null
 # showing blank tail. SGR-colored padding still counts as blank.
 PY_COMMON="import re, sys, unicodedata
 osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
-sgr = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+sgr = re.compile(r'\x1b\[[0-9;:]*[A-Za-z]')
 def vw(ch):
     return 2 if unicodedata.east_asian_width(ch) in (\"W\",\"F\") else (0 if unicodedata.combining(ch) else 1)
+def vwidth(s):
+    return sum(vw(c) for c in sgr.sub('', s))
 def trunc_line(line, w):
     line = osc.sub('', line)
     out = []
     v = 0
     saw = False
     done = False
-    for tok in re.split(r'(\x1b\[[0-9;]*[A-Za-z])', line):
+    for tok in re.split('(' + sgr.pattern + ')', line):
         if done or not tok:
             continue
         if sgr.fullmatch(tok):
@@ -108,18 +110,12 @@ sys.stdout.write('\n'.join(rows) + ('\n' if rows else ''))"
 BATCHPY="$PY_COMMON
 title_w, cell_w, snap_h, medw, multi = (int(a) for a in sys.argv[1:6])
 def trunc_block(lines, w, keep=None):
-    rows = []
-    for raw in lines:
-        line = trunc_line(raw, w)
-        content = any(not ch.isspace() for ch in sgr.sub('', line))
-        rows.append((content, line))
-    if keep is not None:
-        texts = [t for c, t in rows if c][-keep:] if keep > 0 else []
-    else:
-        texts = [t for _, t in rows]
-    return texts
-def vwidth(s):
-    return sum(vw(c) for c in sgr.sub('', s))
+    rows = [trunc_line(raw, w) for raw in lines]
+    if keep is None:
+        return rows
+    if keep <= 0:
+        return []
+    return [t for t in rows if any(not ch.isspace() for ch in sgr.sub('', t))][-keep:]
 def lines_of(b):
     # Same line splitting \$PY saw: text-mode stdin normalizes CRLF/CR to LF,
     # then iterates lines (one trailing newline adds no phantom row).
@@ -159,15 +155,16 @@ vwidth() {
       else printf '%s' "$s" | python3 -c "$VW_PY"; fi ;;
   esac
 }
-# shares the PY_COMMON width rule (wide→2, combining→0).
-VW_PY='import re,sys,unicodedata; t=re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", sys.stdin.read()); print(sum(2 if unicodedata.east_asian_width(c) in ("W","F") else (0 if unicodedata.combining(c) else 1) for c in t))'
+VW_PY="$PY_COMMON
+sys.stdout.write(str(vwidth(sys.stdin.read())))"
 
 read -r cur_sid cur refresh_opt < <(tmux display-message -p '#{session_id} #{window_id} #{@joeverview-refresh}')
-# Auto-refresh period from @joeverview-refresh: seconds, decimals allowed,
-# 0 = off; unset or malformed keeps the 1s default. Held as integer
-# microseconds for EPOCHREALTIME math. Read once per popup open.
-REFRESH_US=1000000
-if [[ ${refresh_opt:-} =~ ^([0-9]+)(\.([0-9]+))?$ ]]; then
+# Auto-refresh period from @joeverview-refresh: seconds, decimals allowed
+# (".5" too), 0 = off; unset or malformed keeps the 0.5s default. Held as
+# integer microseconds for EPOCHREALTIME math. Read once per popup open.
+REFRESH_US=500000
+[[ ${refresh_opt:-} == .* ]] && refresh_opt=0$refresh_opt
+if [[ ${refresh_opt:-} =~ ^([0-9]+)(\.([0-9]*))?$ ]]; then
   refresh_frac=${BASH_REMATCH[3]}000000
   REFRESH_US=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${refresh_frac:0:6}))
 fi
@@ -221,17 +218,18 @@ TITLES_DIRTY=0
 # fault_visible() batch, so no surgical invalidation is needed.
 # Globals written: nsess n (counts), the SESS_* and IDS/* arrays, and the
 # SNAP/SESS_MED caches (loop index i and scratch k are local).
+# Sessions with no window rows (died between the two tmux calls) are
+# dropped, so every listed session owns at least one window.
 # Returns 1 when no windows remain.
 load_data() {
-  local sid sname wid widx wname wtitle wpath panes alert suffix c k idx row
+  local sid wid widx wname wtitle wpath panes alert suffix c k idx row
+  local -a sids=() snames=()
   local -A seen bucket
   SESS_IDS=(); SESS_NAMES=(); SESS_START=(); SESS_COUNT=()
   IDS=(); TITLES=(); ALERTS=(); WIDX=(); WIN_SESS=(); RAW_TITLES=()
   nsess=0; idx=0
-  while IFS=$'\t' read -r sid sname; do
-    SESS_IDS[$nsess]=$sid
-    SESS_NAMES[$nsess]=$sname
-    nsess=$((nsess + 1))
+  while IFS=$'\t' read -r sid row; do
+    sids+=("$sid"); snames+=("$row")
   done < <(tmux list-sessions -F "#{session_id}	#{session_name}")
   # One batched list-windows -a for all sessions (not one per session), one
   # pass bucketing rows by session; the loop below regroups them in
@@ -244,9 +242,12 @@ load_data() {
     row=${row//$'\t'/"$US"}
     bucket[${row%%"$US"*}]+=${row#*"$US"}$'\n'
   done < <(tmux list-windows -a -F "#{session_id}	#{window_id}	#{window_index}	#{window_name}	#{pane_title}	#{pane_current_path}	#{window_panes}	#{?window_bell_flag,B,}#{?@jv_bell,B,}#{?window_activity_flag,A,}")
-  for ((k = 0; k < nsess; k++)); do
-    sid=${SESS_IDS[$k]}
-    SESS_START[$k]=$idx
+  for ((k = 0; k < ${#sids[@]}; k++)); do
+    sid=${sids[$k]}
+    [[ -n ${bucket[$sid]-} ]] || continue
+    SESS_IDS[$nsess]=$sid
+    SESS_NAMES[$nsess]=${snames[$k]}
+    SESS_START[$nsess]=$idx
     c=0
     while IFS=$US read -r wid widx wname wtitle wpath panes alert; do
       [[ -n $wid ]] || continue
@@ -259,8 +260,9 @@ load_data() {
       if ((panes > 1)); then suffix=" ⧉ $panes"; fi
       RAW_TITLES[$idx]="[$widx] $wname │ $wtitle │ $wpath$suffix"
       idx=$((idx + 1)); c=$((c + 1))
-    done <<<"${bucket[$sid]-}"
-    SESS_COUNT[$k]=$c
+    done <<<"${bucket[$sid]}"
+    SESS_COUNT[$nsess]=$c
+    nsess=$((nsess + 1))
   done
   n=$idx
   [ "$n" -eq 0 ] && return 1
@@ -278,24 +280,32 @@ load_data() {
   # new page's captures in the same spawn. TITLES_DIRTY=1 forces the fault.
   TITLES_DIRTY=1
 }
-# Clamp top so sel sits on the visible page.
+# Clamp top so sel sits on the visible page. $1 = preferred top (reloads
+# keep the page the user scrolled to); default puts sel's row on top.
 place_top() {
-  local rstart cnt max_top
+  local rstart cnt max_top want
   rstart=$(( sel - (sel - s0) % COLS ))
   cnt=$((send - s0))
   # Last page whose rows still cover the session's final window.
   max_top=$(( (cnt - (COLS * VROWS - 1)) / COLS * COLS + s0 ))
   (( max_top < s0 )) && max_top=$s0
-  if (( rstart < max_top )); then top=$rstart; else top=$max_top; fi
+  want=${1:-$rstart}
+  (( want > rstart )) && want=$rstart
+  (( want < rstart - COLS * (VROWS - 1) )) && want=$((rstart - COLS * (VROWS - 1)))
+  (( want > max_top )) && want=$max_top
+  (( want < s0 )) && want=$s0
+  top=$want
 }
 # Re-read metadata and reseat sess/sel/top by stable ID (wid missing or gone
-# falls back to off, then clamps into the session). bar=1 preserves
+# falls back to off, then clamps into the session). Staying in the same
+# session keeps the scrolled page (as long as sel remains on it). bar=1 preserves
 # session-bar focus. Full draw; if_changed=1 skips the flush when the frame
 # matches the screen (auto-refresh). Exits quietly when nothing remains (e.g.
 # last window killed). Keyword args, all optional: sid= wid= off= bar=1
 # if_changed=1.
 refresh_to() {
   local want_sid="" want_wid="" want_off="" keep_bar=0 draw_mode="" a k found=0 got_wid=0
+  local keep_sid=${SESS_IDS[$sess]} keep_top=$((top - s0))
   for a in "$@"; do
     case $a in
       sid=*) want_sid=${a#sid=} ;;
@@ -328,17 +338,18 @@ refresh_to() {
   (( sel < s0 )) && sel=$s0
   (( sel >= send )) && sel=$((send - 1))
   bar=$keep_bar
-  place_top
+  if [[ ${SESS_IDS[$sess]} == "$keep_sid" ]]; then place_top $((s0 + keep_top)); else place_top; fi
   draw ${draw_mode:+"$draw_mode"}
 }
 # Full reload, shared by `r` and the auto-refresh tick: drop every cached
-# capture and medallion (other sessions refault on switch), reseat on the
-# selected window by stable ID, else its offset when it died elsewhere, and
-# keep the current focus. Extra args pass through (if_changed=1).
+# capture (load_data drops medallions; other sessions refault on switch),
+# reseat on the selected window by stable ID, else its offset when it died
+# elsewhere, and keep the current focus and page. Extra args pass through
+# (if_changed=1).
 refresh_view() {
   local -a args=(sid="${SESS_IDS[$sess]}" wid="${IDS[$sel]}" off=$((sel - s0)))
   ((bar)) && args+=(bar=1)
-  SNAP=(); SESS_MED=()
+  SNAP=()
   refresh_to "${args[@]}" "$@"
 }
 # New window in the viewed session, starting in the selected cell's
@@ -350,8 +361,10 @@ do_new_window() {
   local target newid dir
   target=${SESS_IDS[$sess]}
   dir=$(tmux display-message -p -t "${IDS[$sel]}" '#{pane_current_path}' 2>/dev/null) || dir=""
-  if [[ -n $dir ]]; then newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" -c "$dir" 2>/dev/null) || newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
-  else newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0; fi
+  if ! newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" ${dir:+-c "$dir"} 2>/dev/null); then
+    [[ -n $dir ]] || return 0
+    newid=$(tmux new-window -d -P -F "#{window_id}" -t "$target" 2>/dev/null) || return 0
+  fi
   # Window ids are unique: load_data GCs dead IDs and fault_visible() faults
   # the new window in fresh.
   refresh_to sid="$target" wid="$newid"
@@ -412,17 +425,22 @@ do_kill_session() {
 # do_kill_session, anything else redraws unchanged. Lone Esc aborts
 # instead of quitting; arrow-key escapes are consumed so no bytes leak
 # into the next read. Sole session never arms (kill refused, as before).
-# Prompt is truncated to W like the footer (small-canvas discipline).
+# The session name is budgeted so the whole prompt fits W (small-canvas
+# discipline): one python spawn, and a canvas narrower than the fixed text
+# slices that ASCII text in bash.
 ask_kill_session() {
-  local nm cnt maxw
+  local nm='' cnt fixed maxw prompt
   (( bar )) || return 0
   (( nsess > 1 )) || return 0
   cnt=${SESS_COUNT[$sess]}
-  maxw=$((W - SB_BORDER_PAD)); (( maxw < 8 )) && maxw=8
-  nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+  printf -v fixed 'Kill session  (%d windows)? y/N' "$cnt"
+  maxw=$((W - ${#fixed}))
+  (( maxw > 0 )) && nm=$(printf '%s' "${SESS_NAMES[$sess]}" | trunc "$maxw")
+  printf -v prompt 'Kill session %s (%d windows)? y/N' "$nm" "$cnt"
+  (( maxw < 0 )) && prompt=${prompt:0:W}
   confirm_armed=1
   at $((H - 1)) 0
-  printf '%s' "$(printf '\x1b[1;31mKill session %s (%d windows)? y/N\x1b[0m' "$nm" "$cnt" | trunc "$W")"
+  printf '\x1b[1;31m%s\x1b[0m' "$prompt"
 }
 # Swap the selected window with its neighbour within the viewed session;
 # cursor follows the moved window by stable ID. Grid focus only.
@@ -481,8 +499,12 @@ read_name() {
       break
     elif [[ $ch == $'\x7f' || $ch == $'\b' ]]; then
       if [[ -n $buf ]]; then
+        # Erase the last char's full visible width (wide glyphs take 2).
+        case $(vwidth "${buf: -1}") in
+          2) printf '\b\b  \b\b' ;;
+          1) printf '\b \b' ;;
+        esac
         buf=${buf%?}
-        printf '\b \b'
       fi
     elif [[ $ch < $' ' ]]; then
       continue
@@ -522,10 +544,10 @@ do_rename_session() {
   refresh_to sid="$sid" off="$off" bar=1
 }
 
-load_data || exit 0
 # The bell that rang on the window underneath needs no reminder: we were
-# looking at it. Clear its sticky before seating so the grid opens clean.
+# looking at it. Clear its sticky before the first load so it never paints.
 tmux set-option -wqu -t "$cur" @jv_bell 2>/dev/null || true
+load_data || exit 0
 sess=0
 for ((k = 0; k < nsess; k++)); do
   if [[ ${SESS_IDS[$k]} == "$cur_sid" ]]; then sess=$k; break; fi
@@ -547,7 +569,7 @@ place_top
 # mapfile -d '' keeps empty blocks aligned (plain mapfile would drop a
 # trailing empty medallion). Subshells cannot write SNAP, so raw (not
 # truncated) captures stage through files. The footer stays out of the batch:
-# it truncates in pure bash (footer_line), and the per-keypress paint_row
+# it truncates in pure bash (paint_footer), and the per-keypress paint_row
 # path must not pay a batch round-trip.
 fault_visible() {
   local e=$((top + COLS * VROWS)) k wid key nmiss=0 bi row
@@ -618,6 +640,7 @@ at() { SHOWN=''; printf '\x1b[%d;%dH\x1b[K' "$(($1 + 1))" "$(($2 + 1))"; }
 
 put() { local cell; printf -v cell '\x1b[%d;%dH\x1b[K%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
 nput() { local cell; printf -v cell '\x1b[%d;%dH%s' "$(($1 + 1))" "$(($2 + 1))" "$3"; FRAME+=$cell; }
+# Title text for cell idx into TCELL (printf -v: no fork per cell).
 # Alert style: bell=bold red, activity=bold yellow (bell wins if both).
 # Selected cells fold reverse into the same SGR so no inner reset kills it.
 title_cell() {
@@ -628,8 +651,8 @@ title_cell() {
     *) sgr='' ;;
   esac
   ((selected)) && sgr="7${sgr:+;$sgr}"
-  if [[ -n $sgr ]]; then printf '\x1b[%sm%s\x1b[0m' "$sgr" "${TITLES[$idx]}"
-  else printf '%s' "${TITLES[$idx]}"; fi
+  if [[ -n $sgr ]]; then printf -v TCELL '\x1b[%sm%s\x1b[0m' "$sgr" "${TITLES[$idx]}"
+  else TCELL=${TITLES[$idx]}; fi
 }
 # Clear one cell's interior span on row y (col 0 = left, 1 = right cell)
 # and write text at the cell's content column (one in from the span).
@@ -652,29 +675,26 @@ paint_row() {
   FRAME=''
   for ((c = 0; c < COLS; c++)); do
     idx=$((top + r * COLS + c))
-    ((idx < send)) && cell_put "$BAND_Y" "$c" "$(title_cell "$idx" $((idx == sel)))"
+    if ((idx < send)); then
+      title_cell "$idx" $((idx == sel))
+      cell_put "$BAND_Y" "$c" "$TCELL"
+    fi
   done
   SHOWN=''
   printf '%s' "$FRAME"
 }
 # Session medallion for the top border: padded arrows when paging is
-# possible, padded bare name when it is not (single session hides session switching — the bar still focuses (session ops live there)).
-# Truncated to fit between the
-# ' Windows ' stamp and the corners. Focus keeps the same footprint: the
-# outer 2 cells stay normal-video gap, only the inner core reverses, so the
-# border length never changes with focus.
-# Batch path: assembles the core in pure bash from the batch-truncated
-# name; the batch already measured the outer width, so no vwidth spawn.
+# possible, padded bare name when it is not (single session hides session
+# switching; the bar still focuses since session ops live there). The
+# fault_visible() batch truncates the name to fit between the ' Windows '
+# stamp and the corners and measures the outer width, so the core assembles
+# here in pure bash with no vwidth spawn. Focus keeps the same footprint:
+# the outer 2 cells stay normal-video gap, only the inner core reverses, so
+# the border length never changes with focus.
 cache_medallion() {
   local nm=${1%%$'\n'*} mlen=${1#*$'\n'} core
   if (( nsess > 1 )); then core="←  $nm  →"; else core=$nm; fi
   SESS_MED[${SESS_IDS[$sess]}]="$core$US$mlen"
-}
-# The early return in fault_visible() covers the cache-hit path: a dropped
-# entry rides the batch, so no separate fault is needed.
-# Split the SESS_MED[sid] pair into draw()'s sinner/sblen locals.
-split_medallion() {
-  IFS=$US read -r sinner sblen <<<"${SESS_MED[${SESS_IDS[$sess]}]}"
 }
 # Footer is the contract: every working key for the current focus is listed,
 # nothing unlisted works. Grid rows show window ops only (c = window,
@@ -685,25 +705,25 @@ footext() {
   # Sole window of the sole session: X is refused, so it is not listed.
   if last_window && ((nsess == 1)); then kill=''; fi
   if ((bar)); then
-    if ((nsess > 1)); then printf '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
-    else printf '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
-  else printf '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window%s · r refresh · q/Esc quit · %d-%d/%d' "$kill" "$hi" "$lo" "$cnt"; fi
+    if ((nsess > 1)); then printf -v FOOT '←→/ad switch · ↓/s back · Enter attach · N new-session · R rename · X kill-session · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"
+    else printf -v FOOT '↓/s back · Enter attach · N new-session · R rename · r refresh · q/Esc quit · session %d/%d' "$((sess + 1))" "$nsess"; fi
+  else printf -v FOOT '↑↓←→/WASD move · ↑ sessions · Enter/0-9 jump · c new-window · R rename · < > move window%s · r refresh · q/Esc quit · %d-%d/%d' "$kill" "$hi" "$lo" "$cnt"; fi
 }
-# Footer row text truncated to canvas width. footext() is ASCII plus W1
-# glyphs, all width 1, so a character slice is exact and no python spawns
-# on keypresses; trailing spaces trim like trunc_line. Byte-counting (non
+# Footer row, truncated to canvas width. footext() is ASCII plus W1 glyphs,
+# all width 1, so a character slice is exact and no python spawns on
+# keypresses; trailing spaces trim like trunc_line. Byte-counting (non
 # UTF-8) locales fall back to the python helper.
-footer_line() {
+paint_footer() {
   local text
-  text=$(footext)
+  footext
   if ((UTF8_CHARS)); then
-    text=${text:0:W}
-    printf '%s' "${text%"${text##*[! ]}"}"
+    text=${FOOT:0:W}
+    text=${text%"${text##*[! ]}"}
   else
-    printf '%s' "$text" | trunc "$W" | tr -d '\n'
+    text=$(printf '%s' "$FOOT" | trunc "$W" | tr -d '\n')
   fi
+  put $((H - 1)) 0 "$text"
 }
-paint_footer() { put $((H - 1)) 0 "$(footer_line)"; }
 # Page to the session `ns` steps away: reset to its first page, keep bar
 # focus so the user can keep paging. Full draw — the only bar painter.
 switch_sess() {
@@ -765,7 +785,8 @@ paint_cells() {
     c=$((k % COLS)); idx=$((top + k))
     band_y $((k / COLS))
     if ((idx < send)); then
-      cell_put "$BAND_Y" "$c" "$(title_cell "$idx" $((idx == sel && bar == 0)))"
+      title_cell "$idx" $((idx == sel && bar == 0))
+      cell_put "$BAND_Y" "$c" "$TCELL"
       mapfile -t lines <<<"${SNAP[${IDS[$idx]}]:-}"
       for ((l = 0; l < snap_h; l++)); do
         cell_put $((BAND_Y + 1 + l)) "$c" "${lines[$l]:-}"
@@ -780,13 +801,14 @@ paint_cells() {
 # `draw if_changed` (auto-refresh) skips the flush when FRAME is
 # byte-identical to SHOWN, the last flushed frame still on screen.
 draw() {
-  local nvis sinner sblen sbx sbar
+  local nvis med sinner sblen sbx sbar
   fault_visible
   nvis=$((send - top)); ((nvis > COLS * VROWS)) && nvis=$((COLS * VROWS))
   FRAME=$'\x1b[?25l'
   hborder 0 '╭' '╮' '┬' '╮' $(( nvis > 1 ? 2 : 1 ))
   nput 0 2 ' Windows '
-  split_medallion
+  med=${SESS_MED[${SESS_IDS[$sess]}]}
+  sinner=${med%"$US"*}; sblen=${med##*"$US"}
   sbx=$(((W - sblen) / 2)); ((sbx < SB_MIN_X)) && sbx=$SB_MIN_X
   if (( sbx + sblen > W - 1 )); then sbx=$((W - 1 - sblen)); fi
   if (( sbx < 1 )); then
@@ -841,20 +863,18 @@ move_down() {
   fi
 }
 
-# Jump to a window, switching session first when it lives elsewhere.
+# Jump to a window in one command: switch-client with a session-qualified
+# window target switches session (when it lives elsewhere) and selects the
+# window, and a window linked into several sessions resolves in this
+# occurrence's session, not whichever one tmux deems best.
 # Jumping unsets the sticky @jv_bell red on its target (belt and braces:
 # session-window-changed already drops it on any visit, and popup open
 # drops it on the window underneath). Set by the alert-bell hook in
 # tmux/joeverview.conf, which also fires for the current window where
 # tmux's own bell flag never does.
 jump_win() {
-  local j=$1 wsess
-  wsess=${WIN_SESS[$j]}
-  tmux set-option -wqu -t "${IDS[$j]}" @jv_bell 2>/dev/null
-  [[ $wsess != "$cur_sid" ]] && tmux switch-client -t "$wsess" 2>/dev/null
-  # Session-qualified: a window linked into several sessions resolves in
-  # this occurrence's session, not whichever one tmux deems best.
-  tmux select-window -t "$wsess:${IDS[$j]}"
+  tmux set-option -wqu -t "${IDS[$1]}" @jv_bell 2>/dev/null
+  tmux switch-client -t "${WIN_SESS[$1]}:${IDS[$1]}"
   exit 0
 }
 
@@ -867,10 +887,13 @@ while :; do
     ((rc > 128)) || break  # >128 = poll timeout; anything else is EOF
     if ((RESIZED)); then
       # Resize: captures, titles and medallions are truncated to the old cell
-      # size, so drop them like `r` does and repaint at the new geometry.
+      # size, so drop them like `r` does and repaint at the new geometry. An
+      # armed kill confirm repaints its prompt: y must never kill unseen.
       RESIZED=0; compute_geometry
       SNAP=(); SESS_MED=(); TITLES_DIRTY=1
-      printf '\x1b[2J'; draw; continue
+      printf '\x1b[2J'; draw
+      ((confirm_armed)) && ask_kill_session
+      continue
     fi
     # Auto-refresh tick, timed by the clock (keys restart the read timeout,
     # so counting timeouts would drift). A backward wall-clock step also
@@ -962,16 +985,14 @@ while :; do
   fi
   if ((prev == sel)); then continue; fi
   if ((sel >= top && sel <= top + COLS * VROWS - 1 && prev >= top && prev <= top + COLS * VROWS - 1)); then
-    # Repaint whole title rows: per-cell EL wipes the sibling, so clear
-    # once per row and rewrite both cells + gutter + borders.
+    # Repaint just the affected title rows (each cell in its own ECH span).
+    # The footer depends only on the page, so a same-page move leaves it.
     if (((prev - top) / COLS == (sel - top) / COLS)); then
       paint_row $(((sel - top) / COLS))
     else
       paint_row $(((prev - top) / COLS))
       paint_row $(((sel - top) / COLS))
     fi
-    # Direct write (not put): FRAME is only flushed in draw().
-    at $((H - 1)) 0; footer_line
   else
     while ((sel < top)); do top=$((top - COLS)); done
     while ((sel > top + COLS * VROWS - 1)); do top=$((top + COLS)); done
@@ -979,4 +1000,4 @@ while :; do
   fi
 done
 }
-main "$@"
+main

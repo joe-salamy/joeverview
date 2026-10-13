@@ -2,7 +2,7 @@
 # grid-render harness: stub-tmux golden + interaction checks for bin/tmux-window-picker.
 # Goldens are byte-exact; bless with UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 only after eyeballing the diff; never commit a bless alongside a behavior change.
 # UPDATE_GOLDEN=1 CONFIRM_EYEBALL=1 re-blesses five q-only goldens (n1-n4, multi) plus two geometry goldens in (t)/(u).
-# Label (b) is intentionally skipped. CI (smoke.sh) fails on a dirty tree so an accidental bless is loud.
+# CI (smoke.sh) fails on a dirty tree so an accidental bless is loud.
 # No live tmux server needed. Stub defaults to 30x60 geometry (cell_w=26,
 # title_w=24, band_h=10, snap_h=9, vx=29, bot_y=28, mid_y=13); STUB_H/STUB_W
 # in the environment override the stub canvas (small-geometry cases (t)/(u)).
@@ -18,8 +18,9 @@ fail() { echo "FAIL $1" >&2; exit 1; }
 # Hooks: CAP_EMPTY=1 prints empty captures (test s); ON_NEW_WINDOW/ON_NEW_SESSION
 # point at files appended on new-window/new-session (tests p/s1/s2);
 # STUB_REFRESH is the @joeverview-refresh value (test y).
-# kill-session/rename-session mutate $FIXDIR generically; run_picker copies
-# fixtures to temp so the repo never dirties.
+# kill-session/rename-session mutate $FIXDIR generically, and set-option -wqu
+# @jv_bell strips the B flag from that window's fixture row (like tmux would);
+# run_picker copies fixtures to temp so the repo never dirties.
 mk_stub() {
   mkdir -p "$1/bin"
   cat > "$1/bin/tmux" <<'STUB'
@@ -87,7 +88,16 @@ case "$cmd" in
       awk -v sid="$sid" -v new="$new" 'BEGIN{FS=OFS="\t"} $1==sid{$2=new} {print}' "$FIXDIR/sessions" > "$FIXDIR/sessions.tmp" && mv "$FIXDIR/sessions.tmp" "$FIXDIR/sessions"
     fi
     ;;
-  select-window|switch-client|kill-window|swap-window|select-pane|rename-window|set-option)
+  set-option)
+    printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
+    if [[ " $* " == *" -wqu "*"@jv_bell"* ]]; then
+      wid=$(get_t "$@")
+      for f in "$FIXDIR"/windows_*; do
+        awk -v w="$wid" 'BEGIN{FS=OFS="\t"} $1==w{sub(/B/,"",$7)} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+      done
+    fi
+    ;;
+  select-window|switch-client|kill-window|swap-window|select-pane|rename-window)
     printf '%s %s\n' "$cmd" "$*" >> "$CALL_LOG"
     ;;
   *) exit 0 ;;
@@ -139,7 +149,6 @@ for name in n1 n2 n3 n4 multi; do
 done
 check_no_literal_esc() { for f in "$@"; do grep -qF '\x1b' "$f" && fail "literal-x1b in $f"; done; }
 
-
 # (c) n4 Right-arrow moves selection 0 -> 1 (tail = final repaint state)
 run_picker n4 '\x1b[Cq' "$T/out-c"
 SEL1=$(printf '\x1b[7m[1]')
@@ -152,7 +161,7 @@ OUT_C=$(cat "$T/out-c"); AFTER_C=${OUT_C##*"$SEL0"}
 # (d) six fed 2 selects @w2
 : > "$T/calls-d"
 run_picker six '2' "$T/out-d" "$T/calls-d"
-grep -qF 'select-window -t $s0:@w2' "$T/calls-d" || fail "digit-jump log"
+grep -qF 'switch-client -t $s0:@w2' "$T/calls-d" || fail "digit-jump log"
 
 # (e) six fed 4x Down pages to index 5
 run_picker six '\x1b[B\x1b[B\x1b[B\x1b[Bq' "$T/out-e"
@@ -251,7 +260,7 @@ grep -qF 'kill-session -t $s1' "$T/calls-q" || fail "kill-middle log"
 sw=$(grep -nF 'switch-client' "$T/calls-q" | head -1 | cut -d: -f1)
 kw=$(grep -nF 'kill-session' "$T/calls-q" | head -1 | cut -d: -f1)
 (( sw < kw )) || fail "kill-preswitch order"
-grep -qF 'select-window' "$T/calls-q" && fail "kill-middle jumped to window"
+grep -qE 'switch-client -t [^ ]*:@' "$T/calls-q" && fail "kill-middle jumped to window"
 tail -c 8192 "$T/out-q" | grep -qF '←  C  →' || fail "kill-middle tail on C"
 tail -c 8192 "$T/out-q" | grep -qF "$(printf '  \x1b[7m←  C  →\x1b[0m  ')" || fail "kill-middle C highlighted"
 tail -c 2048 "$T/out-q" | grep -qF 'session 2/2' || fail "kill-middle session footer"
@@ -263,7 +272,6 @@ printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-r/windows_s0"
 printf '@w2\t0\twin2\tt2\t/tmp/w2\t1\t\n' > "$T/dyn-r/windows_s1"
 CUR_SID='$s0' CUR_WID='@w0' STUB_W=140 run_dynamic r '\x1b[ARnewname\nq' "$T/out-r" "$T/calls-r"
 grep -qF 'rename-session -t $s0 -- newname' "$T/calls-r" || fail "rename-session log"
-grep -qF 'select-window' "$T/calls-r" && fail "rename jumped to window"
 grep -qF 'switch-client' "$T/calls-r" && fail "rename reattached"
 tail -c 8192 "$T/out-r" | grep -qF "$(printf '  \x1b[7m←  newname  →\x1b[0m  ')" || fail "rename new name highlighted"
 tail -c 2048 "$T/out-r" | grep -qF 'session 1/2' || fail "rename session footer"
@@ -279,7 +287,6 @@ printf '@snew0\t0\tfish\tfish\t/tmp\t1\t\n' > "$T/dyn-s/windows_snew"
 # (s1) c with empty new-pane capture: stays open, lands highlighted, no attach
 CAP_EMPTY=1 ON_NEW_WINDOW="$T/dyn-s/on_new_window" run_dynamic s 'cq' "$T/out-s1" "$T/calls-s1"
 grep -qF 'new-window' "$T/calls-s1" || fail "empty-capture c creates"
-grep -qF 'select-window' "$T/calls-s1" && fail "empty-capture c jumped"
 grep -qF 'switch-client' "$T/calls-s1" && fail "empty-capture c reattached"
 grep -qF '[2] new' "$T/out-s1" || fail "empty-capture c lands on new"
 tail -c 8192 "$T/out-s1" | grep -qF "$(printf '\x1b[7m[2]')" || fail "empty-capture c highlighted"
@@ -289,7 +296,6 @@ printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-s/windows_s0"
 # (s2) N with empty new-pane capture: stays open, lands on new session, no attach
 CAP_EMPTY=1 ON_NEW_SESSION="$T/dyn-s/on_new_session" STUB_W=140 run_dynamic s '\x1b[ANq' "$T/out-s2" "$T/calls-s2"
 grep -qF 'new-session' "$T/calls-s2" || fail "empty-capture N creates"
-grep -qF 'select-window' "$T/calls-s2" && fail "empty-capture N jumped"
 grep -qF 'switch-client' "$T/calls-s2" && fail "empty-capture N reattached"
 grep -qF 'second' "$T/out-s2" || fail "empty-capture N lands on new"
 tail -c 8192 "$T/out-s2" | grep -qF "$(printf '  \x1b[7m←  second  →\x1b[0m  ')" || fail "empty-capture N highlighted"
@@ -311,9 +317,8 @@ CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw 'q' "$T/out-lw" "$T/calls-
 grep -qF '←  B  →' "$T/out-lw" || fail "linked medallion shows viewed session"
 grep -qF "$(printf '\x1b[7m[0]')" "$T/out-lw" || fail "linked highlights viewed occurrence"
 CUR_SID='$s1' CUR_WID='@w0' STUB_W=140 run_dynamic lw '\n' "$T/out-lw2" "$T/calls-lw2"
-grep -qF 'select-window -t $s1:@w0' "$T/calls-lw2" || fail "linked enter selects window"
+grep -qF 'switch-client -t $s1:@w0' "$T/calls-lw2" || fail "linked enter selects window"
 grep -qF 'switch-client -t $s0' "$T/calls-lw2" && fail "linked enter hit other session"
-grep -qF 'switch-client' "$T/calls-lw2" && fail "linked enter switched while attached"
 
 # (w) escape sequences in the rename prompt abort it without their tail
 # bytes running as picker keys (ESC[C's C = new-window, ESC[3~'s 3 = jump)
@@ -322,7 +327,7 @@ run_picker n4 'R\x1b[Cq' "$T/out-w" "$T/calls-w"
 grep -qE 'new-window|rename-window' "$T/calls-w" && fail "rename arrow leaked"
 : > "$T/calls-w2"
 run_picker n4 'R\x1b[3~q' "$T/out-w2" "$T/calls-w2"
-grep -qE 'select-window|rename-window' "$T/calls-w2" && fail "rename delete leaked"
+grep -qE 'switch-client|rename-window' "$T/calls-w2" && fail "rename delete leaked"
 # SS3 arrows (ESC O C) navigate like CSI ones
 run_picker n4 '\x1bOCq' "$T/out-w3"
 tail -c 1024 "$T/out-w3" | grep -qF "$SEL1" || fail "ss3 arrow-move"
@@ -388,9 +393,19 @@ OUT_Y5=$(cat "$T/out-y5"); printf '%s' "${OUT_Y5##*y/N}" > "$T/out-y5-tail"
 # (y6) a tick on bar focus keeps the grid selection behind the bar (n4: Right, Up, tick, Down)
 FEED="printf '\e[C\e[A'; sleep 1; printf '\e[Bq'" STUB_REFRESH=0.25 run_picker n4 '' "$T/out-y6"
 tail -c 4096 "$T/out-y6" | grep -qF "$SEL1" || fail "bar tick reset selection"
+# (y7) a tick keeps the scrolled page: 8 windows, Down Down scrolls to page
+# 2-5 with the cursor on its bottom row; the reload must not re-anchor the
+# page on the cursor row (4-7)
+mkdir -p "$T/dyn-y7"
+printf '$s0\tmain\n' > "$T/dyn-y7/sessions"
+for i in 0 1 2 3 4 5 6 7; do printf '@w%d\t%d\twin%d\tt%d\t/tmp\t1\t\n' "$i" "$i" "$i" "$i"; done > "$T/dyn-y7/windows_s0"
+FEED="printf '\e[B\e[B'; sleep 1; printf q" STUB_REFRESH=0.25 run_dynamic y7 '' "$T/out-y7" "$T/calls-y7"
+OUT_Y7=$(cat "$T/out-y7"); LAST_Y7=${OUT_Y7##*$'\e[?25l'}
+[[ $LAST_Y7 == *'[2] win2'* && $LAST_Y7 != *'[6] win6'* ]] || fail "auto-refresh moved the page"
 
 # bounds_check <file> <H> <W>: every CUP address is inside the canvas and the
-# final footer payload (bytes after the last footer-row EL) is one line <= W.
+# final footer payload (bytes after the last footer-row EL, up to the next
+# cursor move) is one line <= W.
 bounds_check() {
   python3 - "$1" "$2" "$3" <<'PY' || fail "bounds $1 ($2x$3)"
 import re, sys, unicodedata
@@ -399,7 +414,7 @@ data = open(f, 'rb').read().decode('utf-8', 'replace')
 for m in re.finditer(r'\x1b\[(\d+);(\d+)H', data):
     r, c = int(m.group(1)), int(m.group(2))
     assert r <= H and c <= W, (r, c, H, W)
-tail = data.rsplit('\x1b[%d;1H\x1b[K' % H, 1)[-1]
+tail = re.split(r'\x1b\[\d+;\d+H', data.rsplit('\x1b[%d;1H\x1b[K' % H, 1)[-1], maxsplit=1)[0]
 tail = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', tail)
 assert '\n' not in tail, repr(tail[-20:])
 vw = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else (0 if unicodedata.combining(ch) else 1) for ch in tail)
@@ -444,22 +459,45 @@ bounds_check "$T/out-v" 30 200
 grep -qF 'main' "$T/out-v" || fail "wide medallion missing"
 STUB_H=30 STUB_W=200 run_picker n1 '\x1b[A\x1b[Bq' "$T/out-v2"
 [ "$(tr -d -c '\n\r' < "$T/out-v2" | wc -c)" -eq 0 ] || fail "wide moves scrolled"
-: > "$T/calls-z"
 # (z) opening the grid never leaves the invoker window red: startup unsets
-# @jv_bell on the window underneath, and a grid jump unsets it on its target
-run_picker n2 'q' "$T/out-z" "$T/calls-z"
+# @jv_bell on the window underneath before loading (the stub drops the B
+# flag on unset, so a load before the clear would paint [0] red), and a
+# grid jump unsets it on its target
+mkdir -p "$T/dyn-z"
+printf '$s0\tmain\n' > "$T/dyn-z/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\tB\n@w1\t1\twin1\tt1\t/tmp/w1\t1\t\n' > "$T/dyn-z/windows_s0"
+STUB_REFRESH=0 run_dynamic z 'q' "$T/out-z" "$T/calls-z"
 grep -qF 'set-option -wqu -t @w0 @jv_bell' "$T/calls-z" || fail "startup did not clear invoker sticky"
+grep -qF "$(printf '1;31m[0]')" "$T/out-z" && fail "invoker window painted red"
 : > "$T/calls-z2"
 run_picker n2 '1' "$T/out-z2" "$T/calls-z2"
-grep -qF 'set-option -wqu -t @w0 @jv_bell' "$T/calls-z2" || fail "startup clear missing before jump"
 grep -qF 'set-option -wqu -t @w1 @jv_bell' "$T/calls-z2" || fail "jump did not clear target sticky"
-grep -qF 'select-window -t $s0:@w1' "$T/calls-z2" || fail "jump select missing"
+grep -qF 'switch-client -t $s0:@w1' "$T/calls-z2" || fail "jump switch missing"
 
+# (sgr) colon-form SGR (tmux emits \e[4:3m for curly underline) stays one
+# zero-width token: the cell keeps its full 26 columns of text
+mkdir -p "$T/dyn-sgr"
+printf '$s0\tmain\n' > "$T/dyn-sgr/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-sgr/windows_s0"
+printf '\e[4:3m%s\n' "$(printf 'x%.0s' {1..80})" > "$T/dyn-sgr/cap_w0"
+run_dynamic sgr 'q' "$T/out-sgr" /dev/null
+grep -qF "$(printf '\e[4:3m%s\e[0m' "$(printf 'x%.0s' {1..26})")" "$T/out-sgr" || fail "colon SGR mismeasured"
+
+# (es) a listed session with no window rows (died between list-sessions and
+# list-windows) is dropped, not shown as an empty session
+mkdir -p "$T/dyn-es"
+printf '$s0\tmain\n$s1\tghost\n' > "$T/dyn-es/sessions"
+printf '@w0\t0\twin0\tt0\t/tmp/w0\t1\t\n' > "$T/dyn-es/windows_s0"
+STUB_W=140 run_dynamic es '\x1b[Aq' "$T/out-es" /dev/null
+tail -c 2048 "$T/out-es" | grep -qF 'session 1/1' || fail "empty session counted"
+
+# (bs) Backspace over a wide glyph in the rename prompt erases both columns
+: > "$T/calls-bs"
+run_picker n2 'R日\x7f\x1bq' "$T/out-bs" "$T/calls-bs"
+grep -qF "$(printf '\b\b  \b\b')" "$T/out-bs" || fail "wide backspace erased one column"
 
 check_no_literal_esc "$T"/out-* "$OUT_T" "$OUT_U"
 # Negative self-test: an over-wide footer must fail bounds_check
 printf '\x1b[1;1H\x1b[K%s' '123456' > "$T/out-wide-neg"
 if ( bounds_check "$T/out-wide-neg" 1 3 2>/dev/null ); then fail "bounds-negative missed"; fi
-
-
 echo "render: PASS"

@@ -49,7 +49,7 @@ if [ -f "$TMUX_CONF" ]; then
     awk -v snippet="$SNIPPET" '
       BEGIN { inserted=0 }
       /^[[:space:]]*#?[[:space:]]*source-file.*joeverview/ { next }
-      /^bind-key +(-T +[^ ]+ +)?[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
+      /^bind(-key)? +(-T +[^ ]+ +)?[o\/] +display-popup.*tmux-(window-picker|content-search)/ { print "# superseded by joeverview (see source-file below): " $0; next }
       /^run .*tpm\/tpm/ && !inserted { print "source-file \"" snippet "\""; inserted=1 }
       { print }
       END { if (!inserted) print "source-file \"" snippet "\"" }

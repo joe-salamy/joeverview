@@ -26,15 +26,8 @@ done <<<"$PANES" | fzf --reverse --border --height=100% \
   --preview="tmux capture-pane -pe -t {1} 2>/dev/null | sed -e 's/[[:space:]]*\$//'" \
   --preview-window='right:60%:nowrap' \
   --bind='ctrl-y:execute-silent(tmux set-buffer -- {3..})') || exit 0
-TARGET_ID=${MATCH%%"$SEP"*}
-# Cross-session parity with the window grid's jump_win: select-pane alone
-# leaves the client behind when the pane lives in another session.
-# display-message -t resolves session/window directly; dead panes fall back
-# to select-pane failing silently as before.
-P_IDS=$(tmux display-message -p -t "$TARGET_ID" '#{session_id} #{window_id}' 2>/dev/null) || P_IDS=""
-P_SESS=${P_IDS%% *}; P_WIN=${P_IDS##* }
-CUR_SESS=$(tmux display-message -p '#{session_id}' 2>/dev/null)
-if [[ -n ${P_SESS:-} && ${P_SESS:-} != "${CUR_SESS:-}" ]]; then tmux switch-client -t "$P_SESS" 2>/dev/null; fi
-# Session-qualified like the grid: a linked window resolves in P_SESS.
-if [[ -n ${P_WIN:-} ]]; then tmux select-window -t "$P_SESS:$P_WIN" 2>/dev/null; fi
-tmux select-pane -t "$TARGET_ID" 2>/dev/null
+# switch-client with a pane target switches session (when the pane lives
+# elsewhere), selects its window and the pane itself in one command; a dead
+# pane fails silently.
+tmux switch-client -t "${MATCH%%"$SEP"*}" 2>/dev/null
+exit 0

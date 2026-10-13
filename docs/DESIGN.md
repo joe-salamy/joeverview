@@ -4,8 +4,8 @@ Why joeverview looks the way it does. Each rule was a live bug.
 
 ## Stable IDs for every tmux target
 
-Rows are keyed by `#{window_id}` (`@id`) / `#{pane_id}` (`%id`); every `capture-pane`,
-`select-window`, and `select-pane` uses the ID. Display text (index, name) is a second field, hidden
+Rows are keyed by `#{window_id}` (`@id`) / `#{pane_id}` (`%id`); every `capture-pane` and
+`switch-client` jump uses the ID. Display text (index, name) is a second field, hidden
 from fzf via `--with-nth=2..` where needed (the grid uses no fzf; its search script hides nothing).
 
 Why: bare `-t 0`/`-t 1` resolve against the *active* window/session, not window 0/1 — previews
@@ -16,10 +16,10 @@ showed the active window's content for unvisited windows. Indexes also shift und
 
 `prefix o` reads window metadata (`list-sessions` + one batched `list-windows -a`), truncates
 all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t
-@id`, bottom `tail` at full resolution). Scrolls and session switches fault missing cells in
+@id`, last non-blank rows kept at full resolution). Scrolls and session switches fault missing cells in
 synchronously. There is no way to mirror live panes without moving them, so the grid re-snapshots
-instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (shipped `0.5`
-in `tmux/joeverview.conf`, `1` when unset; decimals allowed, `0` = off; read once per popup open).
+instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (`0.5` by default,
+shipped explicitly in `tmux/joeverview.conf`; decimals allowed, `.5` too, `0` = off; read once per popup open).
 
 Auto-refresh is the same reload as `r` (`refresh_view`), driven from the main loop's existing 0.25 s
 read timeout — no timer process, so the tick has 0.25 s granularity. Rules it follows:
@@ -28,7 +28,8 @@ read timeout — no timer process, so the tick has 0.25 s granularity. Rules it 
   timeout. Any action that already reloaded (`c`, `X`, `R`, `r`, …) postpones the next tick; a
   backward clock step fires instead of stalling.
 - Reseats by stable ID: the selected window stays selected; if it died elsewhere the cursor keeps
-  its offset; bar focus and the hidden grid selection behind it are kept.
+  its offset; bar focus and the hidden grid selection behind it are kept. The scrolled page stays
+  put as long as the cursor is still on it — a reload never re-anchors the page on the cursor row.
 - Skips the flush when the new frame is byte-identical to the one on screen (`SHOWN`). Direct
   writes that bypass the frame buffer (`at`, `paint_row`) void `SHOWN` so the next tick flushes.
 - Never ticks while the session-kill `y/N` confirm is armed (a redraw would hide the prompt while
@@ -45,8 +46,9 @@ sed.
 
 System `cut -c` counts bytes (uutils 0.8.0 proven: 172×`─` → 173 bytes), splitting UTF-8
 mid-character. The grid embeds a ~40-line python helper via `python3 -c "$PY"` (a heredoc would
-swallow the capture pipe on stdin): strips OSC hyperlinks, keeps SGR sequences atomic, counts
-`east_asian_width`, appends reset. `LC_ALL=C.UTF-8` does not fix `cut`.
+swallow the capture pipe on stdin): strips OSC hyperlinks, keeps SGR sequences atomic (colon
+sub-parameters included: tmux emits curly underline as `\e[4:3m`), counts `east_asian_width`,
+appends reset. `LC_ALL=C.UTF-8` does not fix `cut`.
 
 The fzf search (`/`) delegates to fzf instead: rows are plain text (`capture-pane` without `-e`), and the colored preview uses `--preview-window=…:nowrap`.
 
@@ -110,8 +112,9 @@ geometry and the arm-aware frame (junctions close with corners) are unchanged; b
 from global `n` to the visible session's `[s0, send)`. Up from the top grid row focuses the bar
 (always, even single-session), Left/Right pages (reset to the session's first page, full `draw` —
 the only bar painter, so no partial-repaint desync), Down returns, Enter attaches (`switch-client`)
-or jumps (`switch-client` when the window lives elsewhere, then `select-window -t $sid:@id` —
-session-qualified so a window linked into several sessions resolves in the one being viewed). Titles carry `⧉
+or jumps (`switch-client -t $sid:@id`: one command switches session when needed and selects the
+window, session-qualified so a window linked into several sessions resolves in the one being viewed;
+the search jumps the same way with `switch-client -t %pane`). Titles carry `⧉
 N` from `#{window_panes}` when N>1; the body stays the active-pane capture, so exact-pane work stays
 on jumping to the pane.
 
