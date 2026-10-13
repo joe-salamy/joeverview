@@ -5,7 +5,7 @@
 # shell-command to job_run unexpanded, so the conf cannot be shared via
 # #{@option} — keep both definitions in sync. The popup runs its command
 # through a shell, so the paths are shell-quoted (checkouts with spaces).
-# @joeverview-refresh is not set here: the script's built-in default (0.5)
+# @joeverview-refresh is not set here: the script's built-in default (0.25)
 # matches the conf, and a user value set before `run tpm` stays untouched.
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf -v GRID '%q' "$CURRENT_DIR/bin/tmux-window-picker"

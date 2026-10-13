@@ -25,7 +25,7 @@
 #     Footer is the contract: grid focus runs window ops only, bar focus
 #     session ops only — see docs/USAGE.md.
 #   AUTO-REFRESH: the loop's 0.25s read timeout doubles as the tick; every
-#     @joeverview-refresh seconds (default 0.5, 0 = off) it runs refresh_view(),
+#     @joeverview-refresh seconds (default 0.25, 0 = off) it runs refresh_view(),
 #     the same reload as `r`, and skips the flush when the frame is unchanged.
 set -u
 US=$'\x1f'  # internal field separator (non-whitespace IFS keeps empty fields)
@@ -160,9 +160,10 @@ sys.stdout.write(str(vwidth(sys.stdin.read())))"
 
 read -r cur_sid cur refresh_opt < <(tmux display-message -p '#{session_id} #{window_id} #{@joeverview-refresh}')
 # Auto-refresh period from @joeverview-refresh: seconds, decimals allowed
-# (".5" too), 0 = off; unset or malformed keeps the 0.5s default. Held as
-# integer microseconds for EPOCHREALTIME math. Read once per popup open.
-REFRESH_US=500000
+# (".5" too), 0 = off; unset or malformed keeps the 0.25s default (4 Hz,
+# the read-timeout floor). Held as integer microseconds for EPOCHREALTIME
+# math. Read once per popup open.
+REFRESH_US=250000
 [[ ${refresh_opt:-} == .* ]] && refresh_opt=0$refresh_opt
 if [[ ${refresh_opt:-} =~ ^([0-9]+)(\.([0-9]*))?$ ]]; then
   refresh_frac=${BASH_REMATCH[3]}000000

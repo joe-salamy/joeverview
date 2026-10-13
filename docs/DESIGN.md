@@ -18,8 +18,8 @@ showed the active window's content for unvisited windows. Indexes also shift und
 all titles in one `python3` pass, and captures only the visible page (≤4 cells, `capture-pane -pe -t
 @id`, last non-blank rows kept at full resolution). Scrolls and session switches fault missing cells in
 synchronously. There is no way to mirror live panes without moving them, so the grid re-snapshots
-instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (`0.5` by default,
-shipped explicitly in `tmux/joeverview.conf`; decimals allowed, `.5` too, `0` = off; read once per popup open).
+instead: `r` on demand, and an auto-refresh every `@joeverview-refresh` seconds (`0.25` = 4 Hz by
+default, shipped explicitly in `tmux/joeverview.conf`; decimals allowed, `.5` too, `0` = off; read once per popup open).
 
 Auto-refresh is the same reload as `r` (`refresh_view`), driven from the main loop's existing 0.25 s
 read timeout — no timer process, so the tick has 0.25 s granularity. Rules it follows:
@@ -35,8 +35,9 @@ read timeout — no timer process, so the tick has 0.25 s granularity. Rules it 
 - Never ticks while the session-kill `y/N` confirm is armed (a redraw would hide the prompt while
   `y` still kills). The rename prompt runs its own blocking read, so it cannot tick at all.
 
-Cost per tick: ~5 forks plus one `python3` spawn — measured ~43 ms CPU per 1 s tick (~4 % of one
-core) with 4 windows on a 172×42 canvas.
+Cost per tick: ~5 forks plus one `python3` spawn — measured ~43 ms CPU per tick with 4 windows on a
+172×42 canvas, so the 4 Hz default costs roughly 17 % of one core while the popup is open (raise the
+period to trade freshness for CPU).
 
 Captures stay visible-only (no `-S`): snapshots identify, jumping renders. Trailing capture padding
 is trimmed inside the trunc helper (no `sed` stage) — grid only; the fzf search still strips with
