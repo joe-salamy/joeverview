@@ -51,15 +51,21 @@ stty -echo -icanon -ixon -iexten min 1 time 0 2>/dev/null
 # Optional second arg keeps only the last N non-blank (has a visible
 # non-space char) lines, so top-anchored TUIs stay identifiable instead of
 # showing blank tail. SGR-colored padding still counts as blank.
+# Variation selectors (U+FE0E/FE0F) are stripped, not measured: tmux 3.6
+# (variation-selector-always-wide on) widens a VS16 base to 2 while wcwidth
+# clients (mosh) keep it at 1, so the terminal drifts a column left of tmux
+# for the rest of the row and the next repaint tears through the divider.
+# A bare base (e.g. U+1F5D3) is width 1 to python, tmux, and the client.
 PY_COMMON="import re, sys, unicodedata
 osc = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)')
 sgr = re.compile(r'\x1b\[[0-9;:]*[A-Za-z]')
+vsel = re.compile('[\ufe0e\ufe0f]')
 def vw(ch):
     return 2 if unicodedata.east_asian_width(ch) in (\"W\",\"F\") else (0 if unicodedata.combining(ch) else 1)
 def vwidth(s):
     return sum(vw(c) for c in sgr.sub('', s))
 def trunc_line(line, w):
-    line = osc.sub('', line)
+    line = vsel.sub('', osc.sub('', line))
     out = []
     v = 0
     saw = False
